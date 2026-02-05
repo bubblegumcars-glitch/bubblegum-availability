@@ -1,3 +1,33 @@
+// Bubblegum Cars — Availability API (Vercel Serverless)
+// Fixes:
+// - Uses Booqable API v1 company subdomain + api_key param
+// - Adds caching to prevent rate limits
+// - Adds polite retry/backoff for HTTP 429
+// - Brisbane timezone, Today + next 3 days, midnight-to-midnight
+// - 15-minute re-rent buffer
+// - Excludes add-ons like Accident Excess by name
+
+// -------------------- Small in-memory cache (works when function stays warm) --------------------
+const MEMORY_CACHE = {
+  // key -> { expiresAt: number, value: any }
+  map: new Map(),
+};
+
+function memGet(key) {
+  const hit = MEMORY_CACHE.map.get(key);
+  if (!hit) return null;
+  if (Date.now() > hit.expiresAt) {
+    MEMORY_CACHE.map.delete(key);
+    return null;
+  }
+  return hit.value;
+}
+
+function memSet(key, value, ttlMs) {
+  MEMORY_CACHE.map.set(key, { value, expiresAt: Date.now() + ttlMs });
+}
+
+// -------------------- Helpers --------------------
 function requireEnv(name) {
   const v = process.env[name];
   if (!v) throw new Error(`Missing environment variable: ${name}`);
@@ -20,7 +50,7 @@ function brisbaneTodayISO() {
   const y = parts.find((p) => p.type === "year").value;
   const m = parts.find((p) => p.type === "month").value;
   const d = parts.find((p) => p.type === "day").value;
-  return `${y}-${m}-${d}`;
+  return `${y}-${m}-${d}`; // YYYY-MM-DD
 }
 
 function addDaysISO(isoDate, days) {
@@ -35,7 +65,7 @@ function addDaysISO(isoDate, days) {
 
 function toDMY(isoDate) {
   const [y, m, d] = isoDate.split("-").map(Number);
-  return `${pad2(d)}-${pad2(m)}-${y}`;
+  return `${pad2(d)}-${pad2(m)}-${y}`; // DD-MM-YYYY
 }
 
 function labelForISO(isoDate) {
@@ -59,18 +89,30 @@ function minutesToHHMM(totalMinutes) {
   return `${pad2(h)}:${pad2(m)}`;
 }
 
-/**
- * Booqable v1 availability returns an array of minute slots (depending on interval),
- * but the exact keys can vary. We try several shapes.
- */
+function looksLikeAddon(name) {
+  const n = String(name || "").toLowerCase();
+  const banned = [
+    "accident excess",
+    "excess",
+    "insurance",
+    "deposit",
+    "gps",
+    "child seat",
+    "baby seat",
+    "booster",
+    "add-on",
+    "addon",
+  ];
+  return banned.some((k) => n.includes(k));
+}
+
+// -------------------- Availability parsing --------------------
 function extractBookedMinuteRanges(availabilityJson) {
   const root = availabilityJson?.data ?? availabilityJson;
 
   let minutes = root?.minutes;
   if (!minutes && Array.isArray(root)) minutes = root;
   if (!minutes && Array.isArray(root?.data)) minutes = root.data;
-
-  // Sometimes the v1 endpoint returns { availability: [...] } or similar
   if (!minutes && Array.isArray(root?.availability)) minutes = root.availability;
 
   if (!Array.isArray(minutes) || minutes.length === 0) return null;
@@ -79,7 +121,7 @@ function extractBookedMinuteRanges(availabilityJson) {
     if (typeof x?.available === "boolean") return x.available;
     if (typeof x?.is_available === "boolean") return x.is_available;
     if (typeof x?.status === "string") return x.status.toLowerCase() === "available";
-    if (typeof x === "boolean") return x; // ultra-simple shape
+    if (typeof x === "boolean") return x;
     return null;
   });
 
@@ -134,46 +176,11 @@ function bookedDetail(bufferedRanges) {
   return `Booked windows (incl. buffer): ${parts.join(", ")}${more}`;
 }
 
-function looksLikeAddon(name) {
-  const n = String(name || "").toLowerCase();
-  const banned = [
-    "accident excess",
-    "excess",
-    "insurance",
-    "deposit",
-    "gps",
-    "child seat",
-    "baby seat",
-    "booster",
-    "add-on",
-    "addon",
-  ];
-  return banned.some((k) => n.includes(k));
-}
-
-/**
- * v1 field names can differ, so we keep the filter conservative:
- * - exclude archived if we can detect it
- * - exclude obvious add-ons by name
- */
-function productIsCar(p) {
-  const name = p?.name || p?.title || p?.product_group_name || "";
-  if (looksLikeAddon(name)) return false;
-
-  // If these fields exist, use them. If they don't, don't block.
-  const archived = p?.archived ?? p?.is_archived ?? false;
-  if (archived) return false;
-
-  return true;
-}
-
 function normalizeProductsResponse(json) {
-  // v1 docs show { "products": [...] } in some endpoints and similar plural keys.
   if (Array.isArray(json?.products)) return json.products;
   if (Array.isArray(json?.data)) return json.data;
   if (Array.isArray(json)) return json;
 
-  // Sometimes product groups include nested products
   if (Array.isArray(json?.product_groups)) {
     const out = [];
     for (const pg of json.product_groups) {
@@ -181,44 +188,74 @@ function normalizeProductsResponse(json) {
     }
     return out;
   }
-
   return [];
 }
 
-async function booqableFetch(pathWithLeadingSlash) {
+// -------------------- Booqable fetch with caching + retry --------------------
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function booqableFetch(pathWithLeadingSlash, { cacheKey = null, cacheTtlMs = 0 } = {}) {
   const apiKey = requireEnv("BOOQABLE_API_KEY");
   const companySlug = requireEnv("BOOQABLE_COMPANY_SLUG");
-
-  // v1 endpoint format per docs: https://{company_slug}.booqable.com/api/1/  [oai_citation:2‡developers.booqable.com](https://developers.booqable.com/v1.html)
   const base = `https://${companySlug}.booqable.com/api/1`;
 
   const joiner = pathWithLeadingSlash.includes("?") ? "&" : "?";
   const url = `${base}${pathWithLeadingSlash}${joiner}api_key=${encodeURIComponent(apiKey)}`;
 
-  const res = await fetch(url, { method: "GET" });
-  const text = await res.text();
-
-  let json;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    json = { raw: text };
+  // Memory cache (helps reduce repeated calls)
+  if (cacheKey && cacheTtlMs > 0) {
+    const cached = memGet(cacheKey);
+    if (cached) return cached;
   }
 
-  if (!res.ok) {
-    const msg = json?.error?.message || json?.message || text || `HTTP ${res.status}`;
-    throw new Error(`Booqable error (${res.status}) on ${pathWithLeadingSlash}: ${msg}`);
+  // Retry/backoff for 429
+  const maxAttempts = 4;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const res = await fetch(url, { method: "GET" });
+    const text = await res.text();
+
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = { raw: text };
+    }
+
+    if (res.status === 429 && attempt < maxAttempts) {
+      // Respect Retry-After if present, otherwise backoff: 0.8s, 1.6s, 3.2s...
+      const ra = res.headers.get("retry-after");
+      const waitMs = ra ? Math.min(8000, Number(ra) * 1000) : Math.min(8000, 800 * Math.pow(2, attempt - 1));
+      await sleep(waitMs);
+      continue;
+    }
+
+    if (!res.ok) {
+      const msg = json?.error?.message || json?.message || text || `HTTP ${res.status}`;
+      throw new Error(`Booqable error (${res.status}) on ${pathWithLeadingSlash}: ${msg}`);
+    }
+
+    // Save to memory cache
+    if (cacheKey && cacheTtlMs > 0) memSet(cacheKey, json, cacheTtlMs);
+    return json;
   }
 
-  return json;
+  throw new Error("Unexpected error fetching from Booqable");
 }
 
+// -------------------- Main handler --------------------
 export default async function handler(req, res) {
   try {
     if (req.method !== "GET") {
       res.status(405).json({ error: "Method not allowed" });
       return;
     }
+
+    // IMPORTANT: cache the serverless response at Vercel edge to prevent hammering Booqable
+    // - s-maxage=60: cache 60 seconds
+    // - stale-while-revalidate=300: serve stale up to 5 mins while refreshing in background
+    res.setHeader("Cache-Control", "s-maxage=60, stale-while-revalidate=300");
 
     const todayISO = brisbaneTodayISO();
     const days = [0, 1, 2, 3].map((i) => {
@@ -231,19 +268,27 @@ export default async function handler(req, res) {
       };
     });
 
-    // Try the products list first (this is what our UI expects)
-    // In v1, availability is checked via /products/:id/availability  [oai_citation:3‡developers.booqable.com](https://developers.booqable.com/v1.html)
-    const productsResp = await booqableFetch("/products");
+    // Cache products for 5 minutes (reduces /products calls a lot)
+    const productsResp = await booqableFetch("/products", {
+      cacheKey: "products",
+      cacheTtlMs: 5 * 60 * 1000,
+    });
+
     let products = normalizeProductsResponse(productsResp);
 
-    // If /products returns empty for some accounts, fall back to product_groups and flatten products.
+    // If /products empty, try product_groups (also cached)
     if (!products || products.length === 0) {
-      const pgsResp = await booqableFetch("/product_groups");
+      const pgsResp = await booqableFetch("/product_groups", {
+        cacheKey: "product_groups",
+        cacheTtlMs: 5 * 60 * 1000,
+      });
       products = normalizeProductsResponse(pgsResp);
     }
 
+    // “Cars only” (practical): exclude add-ons by name.
+    // (If you want the strict rental/trackable/show_in_store filter again, tell me what fields your /products returns.)
     const cars = (products || [])
-      .filter(productIsCar)
+      .filter((p) => !looksLikeAddon(p?.name || p?.title || p?.product_group_name || ""))
       .map((p) => ({
         id: p.id,
         name: p.name || p.title || p.product_group_name || "Unnamed",
@@ -252,19 +297,29 @@ export default async function handler(req, res) {
 
     const BUFFER_MINUTES = 15;
 
+    // Cache the final computed response for 60 seconds (biggest rate-limit protection)
+    const finalCacheKey = `final:${todayISO}`;
+    const cachedFinal = memGet(finalCacheKey);
+    if (cachedFinal) {
+      res.status(200).json(cachedFinal);
+      return;
+    }
+
     for (const car of cars) {
       car.statuses = {};
 
       for (const day of days) {
-        const path = `/products/${encodeURIComponent(
-          car.id
-        )}/availability?interval=minute&from=${encodeURIComponent(
+        const path = `/products/${encodeURIComponent(car.id)}/availability?interval=minute&from=${encodeURIComponent(
           day.from
         )}&till=${encodeURIComponent(day.till)}`;
 
         let availJson;
         try {
-          availJson = await booqableFetch(path);
+          // Cache each car/day availability briefly (60s) to reduce refresh hammering
+          availJson = await booqableFetch(path, {
+            cacheKey: `avail:${car.id}:${day.date}`,
+            cacheTtlMs: 60 * 1000,
+          });
         } catch (e) {
           car.statuses[day.date] = { status: "Unknown", detail: String(e.message || e) };
           continue;
@@ -279,7 +334,6 @@ export default async function handler(req, res) {
           continue;
         }
 
-        // Determine slot length
         const root = availJson?.data ?? availJson;
         const minutesArr =
           root?.minutes ||
@@ -300,7 +354,7 @@ export default async function handler(req, res) {
           car.statuses[day.date] = { status: "Available", detail: "" };
         }
 
-        // Heads-up if booked within next 24h window (simple rule: tomorrow also heads-up)
+        // Heads-up: tomorrow too
         const tomorrowISO = addDaysISO(todayISO, 1);
         if (booked && day.date === tomorrowISO) {
           car.statuses[day.date].status = "Heads-up";
@@ -308,11 +362,14 @@ export default async function handler(req, res) {
       }
     }
 
-    // Final “cars only” filter: remove any remaining add-ons by name (belt & braces)
-    const carsOnly = cars.filter((c) => !looksLikeAddon(c.name));
+    const payload = { days, cars };
 
-    res.status(200).json({ days, cars: carsOnly });
+    // Save computed payload in memory for 60 seconds
+    memSet(finalCacheKey, payload, 60 * 1000);
+
+    res.status(200).json(payload);
   } catch (e) {
+    res.setHeader("Cache-Control", "no-store");
     res.status(500).json({ error: e?.message || String(e) });
   }
 }
