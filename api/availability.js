@@ -1,21 +1,16 @@
 // Bubblegum Cars — Availability API (Vercel Serverless)
 //
-// Output format expected by your tab UI:
-//   { days: [{date,label,from,till}], cars: [{id,name,statuses:{[date]:{status,detail}}}] }
+// FINAL PARSER FOR YOUR BOOQABLE SHAPE
+// Your /availability response is numeric:
+//   { stock_count: 1, available: 1, plannable: 1, planned: 1, needed: 0 }
+// We treat: available > 0 => Available, available == 0 => Booked
 //
 // Rules:
-// - Today + next 3 days
-// - Australia/Brisbane timezone
-// - Day = midnight-to-midnight
-// - 15-minute re-rent buffer policy (staff view)
-// - Cars only (exclude add-ons like Accident Excess, Additional Driver(s), Charging Cable, etc)
-//
-// Fixes:
-// - Correctly parse Booqable numeric availability (available: 0/1/...)
-// - Strong caching + retry/backoff to reduce Booqable 429s
-//
-// Debug mode (optional):
-//   /api/availability?debug=1
+// - Today + next 3 days (Brisbane time)
+// - midnight-to-midnight days
+// - 15-minute re-rent buffer policy (staff view note)
+// - Cars only (exclude add-ons)
+// - Caching + 429 backoff
 
 const MEMORY_CACHE = { map: new Map() };
 
@@ -54,7 +49,7 @@ function brisbaneTodayISO() {
   const y = parts.find((p) => p.type === "year").value;
   const m = parts.find((p) => p.type === "month").value;
   const d = parts.find((p) => p.type === "day").value;
-  return `${y}-${m}-${d}`; // YYYY-MM-DD
+  return `${y}-${m}-${d}`;
 }
 
 function addDaysISO(isoDate, days) {
@@ -77,7 +72,7 @@ function labelForISO(isoDate) {
   return `${weekday} ${day}`;
 }
 
-// ---- Add-on filtering (cars only) ----
+// Cars-only filter (name-based)
 function looksLikeAddon(name) {
   const n = String(name || "").toLowerCase();
   const bannedContains = [
@@ -118,7 +113,6 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// Booqable v1 fetch: https://{company_slug}.booqable.com/api/1/... ?api_key=...
 async function booqableFetch(pathWithLeadingSlash, { cacheKey = null, cacheTtlMs = 0 } = {}) {
   const apiKey = requireEnv("BOOQABLE_API_KEY");
   const companySlug = requireEnv("BOOQABLE_COMPANY_SLUG");
@@ -163,35 +157,13 @@ async function booqableFetch(pathWithLeadingSlash, { cacheKey = null, cacheTtlMs
   throw new Error("Unexpected error fetching from Booqable");
 }
 
-// ---- Availability interpretation (handles your payload) ----
-// Your payload example:
-//   { stock_count: 1, available: 1, plannable: 1, planned: 1, needed: 0 }
-//
-// Rules:
-// - If available is a NUMBER:
-//     available > 0  => Available
-//     available === 0 => Booked
+// ✅ Your account: available is a NUMBER (0/1/etc)
 function extractOverallAvailable(availJson) {
   const root = availJson?.data ?? availJson;
+  const val = root?.available ?? availJson?.available;
 
-  // numeric availability (your account)
-  if (typeof root?.available === "number") return root.available > 0;
-  if (typeof availJson?.available === "number") return availJson.available > 0;
-
-  // boolean availability (some accounts)
-  if (typeof root?.available === "boolean") return root.available;
-  if (typeof availJson?.available === "boolean") return availJson.available;
-
-  // alternate keys
-  if (typeof root?.is_available === "boolean") return root.is_available;
-  if (typeof root?.is_available === "number") return root.is_available > 0;
-
-  // fallback by status string
-  if (typeof root?.status === "string") {
-    const s = root.status.toLowerCase();
-    if (s === "available") return true;
-    if (s === "unavailable" || s === "booked") return false;
-  }
+  if (typeof val === "number") return val > 0;
+  if (typeof val === "boolean") return val;
 
   return null;
 }
@@ -200,9 +172,7 @@ export default async function handler(req, res) {
   try {
     if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
 
-    const debug = String(req.query?.debug || "") === "1";
-
-    // Edge caching (major 429 reduction)
+    // Edge cache (reduces rate limits)
     res.setHeader("Cache-Control", "s-maxage=60, stale-while-revalidate=300");
 
     const todayISO = brisbaneTodayISO();
@@ -213,33 +183,21 @@ export default async function handler(req, res) {
       return { date: iso, label: labelForISO(iso), from: toDMY(iso), till: toDMY(iso) };
     });
 
-    // Cache product list for 10 minutes
+    // Products list cached 10 min
     const productsResp = await booqableFetch("/products", { cacheKey: "products", cacheTtlMs: 10 * 60 * 1000 });
     let products = normalizeProductsResponse(productsResp);
 
-    // Fallback
     if (!products || products.length === 0) {
       const pgsResp = await booqableFetch("/product_groups", { cacheKey: "product_groups", cacheTtlMs: 10 * 60 * 1000 });
       products = normalizeProductsResponse(pgsResp);
     }
 
-    // Cars only
     const cars = (products || [])
       .filter((p) => !looksLikeAddon(p?.name || p?.title || p?.product_group_name || ""))
       .map((p) => ({ id: p.id, name: p.name || p.title || p.product_group_name || "Unnamed" }))
       .filter((c) => c.id);
 
-    // Debug mode: show raw for first car/day
-    if (debug) {
-      if (!cars.length) return res.status(200).json({ debug: true, message: "No cars found after filtering." });
-      const car = cars[0];
-      const day = days[0];
-      const path = `/products/${encodeURIComponent(car.id)}/availability?from=${encodeURIComponent(day.from)}&till=${encodeURIComponent(day.till)}`;
-      const raw = await booqableFetch(path, { cacheKey: `debug:${car.id}:${day.date}`, cacheTtlMs: 30 * 1000 });
-      return res.status(200).json({ debug: true, car, day, requestPath: path, raw });
-    }
-
-    // Cache full computed payload for 60s (big reduction)
+    // Full response cache 60s
     const finalKey = `final:${todayISO}`;
     const cachedFinal = memGet(finalKey);
     if (cachedFinal) return res.status(200).json(cachedFinal);
@@ -254,6 +212,7 @@ export default async function handler(req, res) {
 
         let availJson;
         try {
+          // Per car/day cached 60s
           availJson = await booqableFetch(path, { cacheKey: `avail:${car.id}:${day.date}`, cacheTtlMs: 60 * 1000 });
         } catch (e) {
           car.statuses[day.date] = { status: "Unknown", detail: String(e.message || e) };
@@ -273,7 +232,7 @@ export default async function handler(req, res) {
         } else {
           car.statuses[day.date] = {
             status: "Unknown",
-            detail: "Availability returned in an unsupported format (unexpected payload).",
+            detail: "Unexpected availability payload (missing numeric 'available').",
           };
         }
       }
