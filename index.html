@@ -1,204 +1,263 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Bubblegum Cars — Staff Availability</title>
-    <style>
-      :root { color-scheme: light; }
-      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 24px; background: #fff; color: #111; }
-      h1 { margin: 0 0 6px; font-size: 22px; }
-      .sub { margin: 0 0 14px; color: #444; font-size: 14px; line-height: 1.35; }
-
-      .version {
-        display: inline-block;
-        margin: 0 0 14px;
-        padding: 6px 10px;
-        border-radius: 10px;
-        border: 1px solid #111;
-        background: #111;
-        color: #fff;
-        font-weight: 800;
-        font-size: 12px;
-        letter-spacing: 0.3px;
-      }
-
-      .topbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 6px 0 14px; }
-      button { padding: 10px 12px; border-radius: 10px; border: 1px solid #ddd; background: #f7f7f7; cursor: pointer; }
-      button:hover { background: #f0f0f0; }
-      .pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid #eee; border-radius: 999px; font-size: 12px; color: #333; background: #fafafa; }
-
-      .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 14px 0 16px; }
-      .tab { padding: 10px 12px; border-radius: 999px; border: 1px solid #ddd; background: #fff; cursor: pointer; font-weight: 800; }
-      .tab[aria-selected="true"] { background: #111; color: #fff; border-color: #111; }
-
-      .panel { border: 1px solid #eee; border-radius: 14px; padding: 14px; }
-      .panelhead { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-bottom: 10px; }
-      .paneltitle { font-size: 16px; font-weight: 900; }
-      .panelmeta { font-size: 12px; color: #666; }
-
-      table { width: 100%; border-collapse: collapse; }
-      th, td { text-align: left; padding: 10px 8px; border-top: 1px solid #f0f0f0; vertical-align: top; }
-      th { font-size: 12px; color: #666; font-weight: 800; border-top: none; }
-      .car { font-weight: 900; }
-      .id { font-size: 12px; color: #777; margin-top: 2px; }
-
-      .status { font-weight: 900; }
-      .avail { color: #0a7a2a; }
-      .booked { color: #b42318; }
-      .heads { color: #8a5b00; }
-      .unknown { color: #666; }
-
-      .detail { font-size: 12px; color: #333; line-height: 1.35; margin-top: 3px; }
-      .loading { opacity: 0.7; }
-      .err { color: #b42318; font-weight: 900; margin-top: 12px; white-space: pre-wrap; }
-
-      @media (max-width: 700px) {
-        th:nth-child(3), td:nth-child(3) { display: none; }
-      }
-    </style>
-  </head>
-
-  <body>
-    <div class="version">UI VERSION: TABS-V1</div>
-
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Bubblegum Cars — Staff Availability</title>
+  <style>
+    :root{
+      --bg:#ffffff;
+      --text:#111;
+      --muted:#666;
+      --card:#fff;
+      --border:#e9e9e9;
+      --pill:#f6f6f6;
+      --ok:#1f7a1f;
+      --warn:#b15c00;
+      --bad:#8a1f11;
+      --shadow: 0 8px 24px rgba(0,0,0,.06);
+      --radius: 18px;
+      --radius2: 14px;
+      --pad: 18px;
+      --font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+    }
+    body{ margin:0; background:var(--bg); color:var(--text); font-family:var(--font); }
+    .wrap{ max-width:1100px; margin:26px auto; padding:0 16px; }
+    h1{ margin:0 0 6px; font-size:40px; letter-spacing:-.02em; }
+    .sub{ margin:0 0 18px; color:var(--muted); font-size:18px; line-height:1.35; }
+    .controls{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin:14px 0 14px; }
+    .btn, .chip{
+      border:1px solid var(--border);
+      background:var(--pill);
+      padding:10px 14px;
+      border-radius:999px;
+      font-size:16px;
+      color:#222;
+      cursor:pointer;
+      user-select:none;
+    }
+    .btn:hover{ filter:brightness(.98); }
+    .btn:active{ transform:translateY(1px); }
+    .chip{ cursor:default; }
+    .tabs{ display:flex; gap:10px; flex-wrap:wrap; margin:10px 0 14px; }
+    .tab{
+      border:1px solid var(--border);
+      background:#fff;
+      padding:10px 14px;
+      border-radius:999px;
+      font-size:15px;
+      cursor:pointer;
+    }
+    .tab.active{
+      background:#111;
+      color:#fff;
+      border-color:#111;
+    }
+    .card{
+      background:var(--card);
+      border:1px solid var(--border);
+      border-radius:var(--radius);
+      box-shadow:var(--shadow);
+      padding:18px;
+    }
+    .titleRow{
+      display:flex;
+      justify-content:space-between;
+      align-items:flex-end;
+      gap:10px;
+      margin-bottom:14px;
+    }
+    .dayTitle{ font-size:28px; margin:0; letter-spacing:-.01em; }
+    .rightNote{ color:var(--muted); font-size:13px; }
+    table{ width:100%; border-collapse:collapse; }
+    th, td{ text-align:left; padding:14px 10px; border-top:1px solid var(--border); vertical-align:top; }
+    th{ color:var(--muted); font-weight:600; font-size:13px; letter-spacing:.02em; text-transform:none; }
+    .carName{ font-weight:700; font-size:18px; margin-bottom:2px; }
+    .status{ font-weight:800; font-size:20px; }
+    .status.ok{ color:var(--ok); }
+    .status.warn{ color:var(--warn); }
+    .status.bad{ color:var(--bad); }
+    .times{ color:#222; font-size:14px; }
+    .detail{ color:var(--muted); font-size:13px; }
+    .loading{ color:var(--muted); padding:10px 0 0; }
+    .errorBox{
+      margin-top:12px;
+      padding:12px 14px;
+      border-radius:12px;
+      border:1px solid #ffd0d0;
+      background:#fff5f5;
+      color:#8a1f11;
+      font-weight:600;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
     <h1>Bubblegum Cars — Staff Availability</h1>
     <p class="sub">
       Shows <b>Today + next 3 days</b> in <b>Brisbane time</b>. Day = midnight-to-midnight.
       Includes a <b>15-minute re-rent buffer</b>. Anyone with the link can view.
     </p>
 
-    <div class="topbar">
-      <button id="refreshBtn">Refresh</button>
-      <span class="pill">Timezone: Australia/Brisbane</span>
-      <span class="pill">Range: 4 days</span>
-      <span class="pill">Buffer: 15 minutes</span>
-      <span class="pill">View: Available / Booked / Heads-up</span>
+    <div class="controls">
+      <button class="btn" id="refreshBtn">Refresh</button>
+      <span class="chip">Timezone: Australia/Brisbane</span>
+      <span class="chip">Range: 4 days</span>
+      <span class="chip">Buffer: 15 minutes</span>
+      <span class="chip">View: Available / Booked / Heads-up + times</span>
     </div>
 
-    <div id="tabs" class="tabs"></div>
+    <div class="tabs" id="tabs"></div>
 
-    <div id="panel" class="panel loading">Loading…</div>
-    <div id="error" class="err" style="display:none;"></div>
+    <div class="card">
+      <div class="titleRow">
+        <h2 class="dayTitle" id="dayTitle">Loading…</h2>
+        <div class="rightNote">Brisbane time • midnight–midnight • 15-min buffer</div>
+      </div>
 
-    <script>
-      const tabsEl = document.getElementById("tabs");
-      const panelEl = document.getElementById("panel");
-      const errBox = document.getElementById("error");
-      const refreshBtn = document.getElementById("refreshBtn");
+      <div id="content">
+        <div class="loading">Loading…</div>
+      </div>
 
-      let DATA = null;
-      let selectedDate = null;
+      <div id="error" class="errorBox" style="display:none;"></div>
+    </div>
+  </div>
 
-      function safeText(s) {
-        return String(s ?? "").replace(/[&<>"']/g, (c) => ({
-          "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
-        }[c]));
-      }
+  <script>
+    const elTabs = document.getElementById("tabs");
+    const elTitle = document.getElementById("dayTitle");
+    const elContent = document.getElementById("content");
+    const elError = document.getElementById("error");
+    const btnRefresh = document.getElementById("refreshBtn");
 
-      function statusClass(status) {
-        if (status === "Available") return "avail";
-        if (status === "Booked") return "booked";
-        if (status === "Heads-up") return "heads";
-        return "unknown";
-      }
+    let state = {
+      days: [],
+      selectedDate: null,
+      cars: []
+    };
 
-      function renderTabs(days) {
-        tabsEl.innerHTML = "";
-        for (const day of days) {
-          const btn = document.createElement("button");
-          btn.className = "tab";
-          btn.type = "button";
-          btn.textContent = `${day.label} (${day.date})`;
-          btn.setAttribute("aria-selected", day.date === selectedDate ? "true" : "false");
-          btn.addEventListener("click", () => {
-            selectedDate = day.date;
-            renderTabs(days);
-            renderPanel();
-          });
-          tabsEl.appendChild(btn);
-        }
-      }
+    function showError(msg){
+      elError.textContent = msg;
+      elError.style.display = "block";
+    }
+    function clearError(){
+      elError.textContent = "";
+      elError.style.display = "none";
+    }
 
-      function renderPanel() {
-        if (!DATA) return;
-        const day = DATA.days.find(d => d.date === selectedDate) || DATA.days[0];
-        if (!day) return;
+    function statusClass(status){
+      if (status === "Available") return "ok";
+      if (status === "Heads-up") return "warn";
+      if (status === "Booked") return "bad";
+      return "";
+    }
 
-        const cars = DATA.cars || [];
-        const rank = { "Heads-up": 0, "Booked": 1, "Available": 2, "Unknown": 3 };
+    function renderTabs(){
+      elTabs.innerHTML = "";
+      state.days.forEach(d => {
+        const b = document.createElement("button");
+        b.className = "tab" + (d.date === state.selectedDate ? " active" : "");
+        b.textContent = `${d.label} (${d.date})`;
+        b.onclick = () => {
+          state.selectedDate = d.date;
+          renderTabs();
+          loadSelectedDay();
+        };
+        elTabs.appendChild(b);
+      });
+    }
 
-        const rows = cars.map(car => {
-          const st = (car.statuses && car.statuses[day.date]) ? car.statuses[day.date] : { status: "Unknown", detail: "" };
-          return { name: car.name || "Unnamed", id: car.id || "", status: st.status || "Unknown", detail: st.detail || "" };
-        }).sort((a,b) => {
-          const ra = rank[a.status] ?? 99;
-          const rb = rank[b.status] ?? 99;
-          if (ra !== rb) return ra - rb;
-          return a.name.localeCompare(b.name);
-        });
+    function renderTable(){
+      const day = state.days.find(d => d.date === state.selectedDate);
+      if (!day) return;
 
-        let html = `
-          <div class="panelhead">
-            <div class="paneltitle">${safeText(day.label)} — ${safeText(day.date)}</div>
-            <div class="panelmeta">Brisbane time · midnight–midnight · 15-min buffer</div>
-          </div>
-          <table>
-            <thead>
-              <tr>
-                <th style="width:40%">Car</th>
-                <th style="width:20%">Status</th>
-                <th style="width:40%">Detail</th>
-              </tr>
-            </thead>
-            <tbody>
+      elTitle.textContent = `${day.label} — ${day.date}`;
+
+      const rows = state.cars.map(car => {
+        const s = (car.statuses && car.statuses[state.selectedDate]) ? car.statuses[state.selectedDate] : null;
+        const status = s?.status || "Unknown";
+        const times = s?.times || "";
+        const detail = s?.detail || "";
+
+        return `
+          <tr>
+            <td>
+              <div class="carName">${(car.name || "").trim()}</div>
+            </td>
+            <td>
+              <div class="status ${statusClass(status)}">${status}</div>
+            </td>
+            <td>
+              <div class="times">${times ? times : ""}</div>
+              ${detail ? `<div class="detail">${detail}</div>` : ""}
+            </td>
+          </tr>
         `;
+      }).join("");
 
-        for (const r of rows) {
-          html += `
+      elContent.innerHTML = `
+        <table>
+          <thead>
             <tr>
-              <td>
-                <div class="car">${safeText(r.name)}</div>
-                ${r.id ? `<div class="id">ID: ${safeText(r.id)}</div>` : ``}
-              </td>
-              <td><div class="status ${statusClass(r.status)}">${safeText(r.status)}</div></td>
-              <td><div class="detail">${safeText(r.detail)}</div></td>
+              <th style="width:45%;">Car</th>
+              <th style="width:20%;">Status</th>
+              <th style="width:35%;">Times / Notes</th>
             </tr>
-          `;
-        }
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+      `;
+    }
 
-        html += `</tbody></table>`;
-        panelEl.classList.remove("loading");
-        panelEl.innerHTML = html;
+    async function loadInitial(){
+      clearError();
+      elContent.innerHTML = `<div class="loading">Loading…</div>`;
+
+      // Load the day list + default grid (no times)
+      const r = await fetch(`/api/availability`);
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || "Failed to load availability");
+
+      state.days = j.days || [];
+      state.selectedDate = state.days?.[0]?.date || null;
+
+      renderTabs();
+      await loadSelectedDay();
+    }
+
+    async function loadSelectedDay(){
+      clearError();
+      elContent.innerHTML = `<div class="loading">Loading day details…</div>`;
+
+      const date = state.selectedDate;
+      const r = await fetch(`/api/availability?date=${encodeURIComponent(date)}&times=1`);
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || "Failed to load day");
+
+      // Keep the same tabs list, but update cars from dayview
+      state.days = j.days || state.days;
+      state.cars = j.cars || [];
+      renderTabs();
+      renderTable();
+    }
+
+    btnRefresh.onclick = async () => {
+      try {
+        await loadSelectedDay();
+      } catch (e) {
+        showError(e.message || String(e));
       }
+    };
 
-      async function load() {
-        panelEl.classList.add("loading");
-        panelEl.textContent = "Loading…";
-        errBox.style.display = "none";
-
-        try {
-          const res = await fetch("/api/availability", { cache: "no-store" });
-          const text = await res.text();
-          let json;
-          try { json = JSON.parse(text); } catch { throw new Error("Server did not return JSON:\n" + text); }
-          if (!res.ok) throw new Error(json.error || "Request failed");
-
-          DATA = json;
-          selectedDate = DATA?.days?.[0]?.date || null;
-
-          renderTabs(DATA.days || []);
-          renderPanel();
-        } catch (e) {
-          panelEl.classList.remove("loading");
-          panelEl.textContent = "";
-          errBox.style.display = "block";
-          errBox.textContent = "Error:\n" + (e?.message || String(e));
-        }
+    (async () => {
+      try {
+        await loadInitial();
+      } catch (e) {
+        showError(e.message || String(e));
       }
-
-      refreshBtn.addEventListener("click", load);
-      load();
-    </script>
-  </body>
+    })();
+  </script>
+</body>
 </html>
