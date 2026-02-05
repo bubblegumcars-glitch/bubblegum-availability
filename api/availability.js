@@ -1,16 +1,21 @@
 // Bubblegum Cars — Availability API (Vercel Serverless)
 //
+// Output format expected by your tab UI:
+//   { days: [{date,label,from,till}], cars: [{id,name,statuses:{[date]:{status,detail}}}] }
+//
+// Rules:
 // - Today + next 3 days
 // - Australia/Brisbane timezone
-// - midnight-to-midnight days
-// - 15-minute buffer policy (staff view)
-// - Cars only (exclude add-ons)
-// - Strong caching + 429 backoff
+// - Day = midnight-to-midnight
+// - 15-minute re-rent buffer policy (staff view)
+// - Cars only (exclude add-ons like Accident Excess, Additional Driver(s), Charging Cable, etc)
 //
-// IMPORTANT: Debug mode
-// Visit: /api/availability?debug=1
-// This will return the raw Booqable availability payload (for 1 car + 1 day)
-// so we can update parsing correctly.
+// Fixes:
+// - Correctly parse Booqable numeric availability (available: 0/1/...)
+// - Strong caching + retry/backoff to reduce Booqable 429s
+//
+// Debug mode (optional):
+//   /api/availability?debug=1
 
 const MEMORY_CACHE = { map: new Map() };
 
@@ -49,7 +54,7 @@ function brisbaneTodayISO() {
   const y = parts.find((p) => p.type === "year").value;
   const m = parts.find((p) => p.type === "month").value;
   const d = parts.find((p) => p.type === "day").value;
-  return `${y}-${m}-${d}`;
+  return `${y}-${m}-${d}`; // YYYY-MM-DD
 }
 
 function addDaysISO(isoDate, days) {
@@ -72,7 +77,7 @@ function labelForISO(isoDate) {
   return `${weekday} ${day}`;
 }
 
-// Cars-only filter
+// ---- Add-on filtering (cars only) ----
 function looksLikeAddon(name) {
   const n = String(name || "").toLowerCase();
   const bannedContains = [
@@ -113,6 +118,7 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// Booqable v1 fetch: https://{company_slug}.booqable.com/api/1/... ?api_key=...
 async function booqableFetch(pathWithLeadingSlash, { cacheKey = null, cacheTtlMs = 0 } = {}) {
   const apiKey = requireEnv("BOOQABLE_API_KEY");
   const companySlug = requireEnv("BOOQABLE_COMPANY_SLUG");
@@ -157,38 +163,37 @@ async function booqableFetch(pathWithLeadingSlash, { cacheKey = null, cacheTtlMs
   throw new Error("Unexpected error fetching from Booqable");
 }
 
-// Very safe helper: returns a compact summary of keys so we can recognize the shape
-function summarizeShape(obj, depth = 2) {
-  const seen = new Set();
+// ---- Availability interpretation (handles your payload) ----
+// Your payload example:
+//   { stock_count: 1, available: 1, plannable: 1, planned: 1, needed: 0 }
+//
+// Rules:
+// - If available is a NUMBER:
+//     available > 0  => Available
+//     available === 0 => Booked
+function extractOverallAvailable(availJson) {
+  const root = availJson?.data ?? availJson;
 
-  function inner(x, d) {
-    if (x === null) return null;
-    const t = typeof x;
+  // numeric availability (your account)
+  if (typeof root?.available === "number") return root.available > 0;
+  if (typeof availJson?.available === "number") return availJson.available > 0;
 
-    if (t !== "object") return t;
+  // boolean availability (some accounts)
+  if (typeof root?.available === "boolean") return root.available;
+  if (typeof availJson?.available === "boolean") return availJson.available;
 
-    if (seen.has(x)) return "[circular]";
-    seen.add(x);
+  // alternate keys
+  if (typeof root?.is_available === "boolean") return root.is_available;
+  if (typeof root?.is_available === "number") return root.is_available > 0;
 
-    if (Array.isArray(x)) {
-      if (x.length === 0) return [];
-      // show first element shape only
-      return [inner(x[0], d - 1)];
-    }
-
-    const out = {};
-    const keys = Object.keys(x).slice(0, 30);
-    for (const k of keys) {
-      if (d <= 0) {
-        out[k] = typeof x[k];
-      } else {
-        out[k] = inner(x[k], d - 1);
-      }
-    }
-    return out;
+  // fallback by status string
+  if (typeof root?.status === "string") {
+    const s = root.status.toLowerCase();
+    if (s === "available") return true;
+    if (s === "unavailable" || s === "booked") return false;
   }
 
-  return inner(obj, depth);
+  return null;
 }
 
 export default async function handler(req, res) {
@@ -197,7 +202,7 @@ export default async function handler(req, res) {
 
     const debug = String(req.query?.debug || "") === "1";
 
-    // Cache headers (still fine in debug; debug returns extra info)
+    // Edge caching (major 429 reduction)
     res.setHeader("Cache-Control", "s-maxage=60, stale-while-revalidate=300");
 
     const todayISO = brisbaneTodayISO();
@@ -208,67 +213,38 @@ export default async function handler(req, res) {
       return { date: iso, label: labelForISO(iso), from: toDMY(iso), till: toDMY(iso) };
     });
 
-    // Products cache longer
+    // Cache product list for 10 minutes
     const productsResp = await booqableFetch("/products", { cacheKey: "products", cacheTtlMs: 10 * 60 * 1000 });
     let products = normalizeProductsResponse(productsResp);
 
+    // Fallback
     if (!products || products.length === 0) {
       const pgsResp = await booqableFetch("/product_groups", { cacheKey: "product_groups", cacheTtlMs: 10 * 60 * 1000 });
       products = normalizeProductsResponse(pgsResp);
     }
 
+    // Cars only
     const cars = (products || [])
       .filter((p) => !looksLikeAddon(p?.name || p?.title || p?.product_group_name || ""))
       .map((p) => ({ id: p.id, name: p.name || p.title || p.product_group_name || "Unnamed" }))
       .filter((c) => c.id);
 
-    // DEBUG MODE: return raw payload for first car + first day
+    // Debug mode: show raw for first car/day
     if (debug) {
       if (!cars.length) return res.status(200).json({ debug: true, message: "No cars found after filtering." });
-
       const car = cars[0];
       const day = days[0];
-
       const path = `/products/${encodeURIComponent(car.id)}/availability?from=${encodeURIComponent(day.from)}&till=${encodeURIComponent(day.till)}`;
-
       const raw = await booqableFetch(path, { cacheKey: `debug:${car.id}:${day.date}`, cacheTtlMs: 30 * 1000 });
-
-      return res.status(200).json({
-        debug: true,
-        note: "Copy/paste this JSON back to ChatGPT (it contains the exact availability payload shape).",
-        car: { id: car.id, name: car.name },
-        day,
-        requestPath: path,
-        shapeSummary: summarizeShape(raw, 3),
-        raw,
-      });
+      return res.status(200).json({ debug: true, car, day, requestPath: path, raw });
     }
 
-    // Cache full computed payload for 60s
+    // Cache full computed payload for 60s (big reduction)
     const finalKey = `final:${todayISO}`;
     const cachedFinal = memGet(finalKey);
     if (cachedFinal) return res.status(200).json(cachedFinal);
 
     const BUFFER_MINUTES = 15;
-
-    // Temporary placeholder until we learn your exact availability shape:
-    // We won’t guess. We’ll mark Unknown with a clear message unless we can detect "available" booleans.
-    function extractOverallAvailable(availJson) {
-      const root = availJson?.data ?? availJson;
-
-      if (typeof root?.available === "boolean") return root.available;
-      if (typeof root?.is_available === "boolean") return root.is_available;
-      if (typeof availJson?.available === "boolean") return availJson.available;
-      if (typeof availJson?.is_available === "boolean") return availJson.is_available;
-
-      if (typeof root?.status === "string") {
-        const s = root.status.toLowerCase();
-        if (s === "available") return true;
-        if (s === "unavailable" || s === "booked") return false;
-      }
-
-      return null;
-    }
 
     for (const car of cars) {
       car.statuses = {};
@@ -297,7 +273,7 @@ export default async function handler(req, res) {
         } else {
           car.statuses[day.date] = {
             status: "Unknown",
-            detail: "Availability returned in an unsupported format. Open /api/availability?debug=1 to capture the payload.",
+            detail: "Availability returned in an unsupported format (unexpected payload).",
           };
         }
       }
