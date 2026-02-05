@@ -17,9 +17,9 @@ function brisbaneTodayISO() {
     day: "2-digit",
   }).formatToParts(now);
 
-  const y = parts.find(p => p.type === "year").value;
-  const m = parts.find(p => p.type === "month").value;
-  const d = parts.find(p => p.type === "day").value;
+  const y = parts.find((p) => p.type === "year").value;
+  const m = parts.find((p) => p.type === "month").value;
+  const d = parts.find((p) => p.type === "day").value;
   return `${y}-${m}-${d}`;
 }
 
@@ -41,8 +41,15 @@ function toDMY(isoDate) {
 function labelForISO(isoDate) {
   const [y, m, d] = isoDate.split("-").map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d));
-  const weekday = dt.toLocaleDateString("en-AU", { weekday: "short", timeZone: "Australia/Brisbane" });
-  const day = dt.toLocaleDateString("en-AU", { day: "2-digit", month: "short", timeZone: "Australia/Brisbane" });
+  const weekday = dt.toLocaleDateString("en-AU", {
+    weekday: "short",
+    timeZone: "Australia/Brisbane",
+  });
+  const day = dt.toLocaleDateString("en-AU", {
+    day: "2-digit",
+    month: "short",
+    timeZone: "Australia/Brisbane",
+  });
   return `${weekday} ${day}`;
 }
 
@@ -52,6 +59,10 @@ function minutesToHHMM(totalMinutes) {
   return `${pad2(h)}:${pad2(m)}`;
 }
 
+/**
+ * Booqable v1 availability returns an array of minute slots (depending on interval),
+ * but the exact keys can vary. We try several shapes.
+ */
 function extractBookedMinuteRanges(availabilityJson) {
   const root = availabilityJson?.data ?? availabilityJson;
 
@@ -59,16 +70,20 @@ function extractBookedMinuteRanges(availabilityJson) {
   if (!minutes && Array.isArray(root)) minutes = root;
   if (!minutes && Array.isArray(root?.data)) minutes = root.data;
 
+  // Sometimes the v1 endpoint returns { availability: [...] } or similar
+  if (!minutes && Array.isArray(root?.availability)) minutes = root.availability;
+
   if (!Array.isArray(minutes) || minutes.length === 0) return null;
 
   const availFlags = minutes.map((x) => {
     if (typeof x?.available === "boolean") return x.available;
     if (typeof x?.is_available === "boolean") return x.is_available;
     if (typeof x?.status === "string") return x.status.toLowerCase() === "available";
+    if (typeof x === "boolean") return x; // ultra-simple shape
     return null;
   });
 
-  if (availFlags.every(v => v === null)) return null;
+  if (availFlags.every((v) => v === null)) return null;
 
   const ranges = [];
   let inBooked = false;
@@ -110,39 +125,13 @@ function applyBufferToRanges(ranges, bufferMinutes, totalLength) {
   return merged;
 }
 
-function anyBookedInWindow(bufferedRanges) {
-  return bufferedRanges && bufferedRanges.length > 0;
-}
-
 function bookedDetail(bufferedRanges) {
   if (!bufferedRanges || bufferedRanges.length === 0) return "";
-  const parts = bufferedRanges.slice(0, 3).map(([s, e]) => `${minutesToHHMM(s)}–${minutesToHHMM(e)}`);
+  const parts = bufferedRanges
+    .slice(0, 3)
+    .map(([s, e]) => `${minutesToHHMM(s)}–${minutesToHHMM(e)}`);
   const more = bufferedRanges.length > 3 ? ` (+${bufferedRanges.length - 3} more)` : "";
   return `Booked windows (incl. buffer): ${parts.join(", ")}${more}`;
-}
-
-async function booqableFetch(path) {
-  const apiKey = requireEnv("BOOQABLE_API_KEY");
-  const base = "https://api.booqable.com";
-  const url = base + path;
-
-  const res = await fetch(url, {
-    method: "GET",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${apiKey}`,
-    },
-  });
-
-  const text = await res.text();
-  let json;
-  try { json = JSON.parse(text); } catch { json = { raw: text }; }
-
-  if (!res.ok) {
-    const msg = json?.error?.message || json?.message || text || `HTTP ${res.status}`;
-    throw new Error(`Booqable error (${res.status}) on ${path}: ${msg}`);
-  }
-  return json;
 }
 
 function looksLikeAddon(name) {
@@ -162,15 +151,66 @@ function looksLikeAddon(name) {
   return banned.some((k) => n.includes(k));
 }
 
+/**
+ * v1 field names can differ, so we keep the filter conservative:
+ * - exclude archived if we can detect it
+ * - exclude obvious add-ons by name
+ */
 function productIsCar(p) {
-  const rental = !!(p?.rental);
-  const trackable = !!(p?.trackable);
-  const show = !!(p?.show_in_store);
-
-  const name = p?.title || p?.name || "";
+  const name = p?.name || p?.title || p?.product_group_name || "";
   if (looksLikeAddon(name)) return false;
 
-  return rental && trackable && show;
+  // If these fields exist, use them. If they don't, don't block.
+  const archived = p?.archived ?? p?.is_archived ?? false;
+  if (archived) return false;
+
+  return true;
+}
+
+function normalizeProductsResponse(json) {
+  // v1 docs show { "products": [...] } in some endpoints and similar plural keys.
+  if (Array.isArray(json?.products)) return json.products;
+  if (Array.isArray(json?.data)) return json.data;
+  if (Array.isArray(json)) return json;
+
+  // Sometimes product groups include nested products
+  if (Array.isArray(json?.product_groups)) {
+    const out = [];
+    for (const pg of json.product_groups) {
+      if (Array.isArray(pg?.products)) out.push(...pg.products);
+    }
+    return out;
+  }
+
+  return [];
+}
+
+async function booqableFetch(pathWithLeadingSlash) {
+  const apiKey = requireEnv("BOOQABLE_API_KEY");
+  const companySlug = requireEnv("BOOQABLE_COMPANY_SLUG");
+
+  // v1 endpoint format per docs: https://{company_slug}.booqable.com/api/1/  [oai_citation:2‡developers.booqable.com](https://developers.booqable.com/v1.html)
+  const base = `https://${companySlug}.booqable.com/api/1`;
+
+  const joiner = pathWithLeadingSlash.includes("?") ? "&" : "?";
+  const url = `${base}${pathWithLeadingSlash}${joiner}api_key=${encodeURIComponent(apiKey)}`;
+
+  const res = await fetch(url, { method: "GET" });
+  const text = await res.text();
+
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    json = { raw: text };
+  }
+
+  if (!res.ok) {
+    const msg = json?.error?.message || json?.message || text || `HTTP ${res.status}`;
+    throw new Error(`Booqable error (${res.status}) on ${pathWithLeadingSlash}: ${msg}`);
+  }
+
+  return json;
 }
 
 export default async function handler(req, res) {
@@ -191,15 +231,22 @@ export default async function handler(req, res) {
       };
     });
 
+    // Try the products list first (this is what our UI expects)
+    // In v1, availability is checked via /products/:id/availability  [oai_citation:3‡developers.booqable.com](https://developers.booqable.com/v1.html)
     const productsResp = await booqableFetch("/products");
-    const list = productsResp?.data ?? productsResp?.products ?? productsResp ?? [];
-    const products = Array.isArray(list) ? list : (list?.data ?? []);
+    let products = normalizeProductsResponse(productsResp);
+
+    // If /products returns empty for some accounts, fall back to product_groups and flatten products.
+    if (!products || products.length === 0) {
+      const pgsResp = await booqableFetch("/product_groups");
+      products = normalizeProductsResponse(pgsResp);
+    }
 
     const cars = (products || [])
       .filter(productIsCar)
       .map((p) => ({
-        id: p.id ?? p.uuid ?? p.slug ?? p.handle ?? p?.attributes?.id,
-        name: p.title || p.name || p?.attributes?.title || "Unnamed",
+        id: p.id,
+        name: p.name || p.title || p.product_group_name || "Unnamed",
       }))
       .filter((c) => c.id);
 
@@ -209,7 +256,11 @@ export default async function handler(req, res) {
       car.statuses = {};
 
       for (const day of days) {
-        const path = `/products/${encodeURIComponent(car.id)}/availability?interval=minute&from=${encodeURIComponent(day.from)}&till=${encodeURIComponent(day.till)}`;
+        const path = `/products/${encodeURIComponent(
+          car.id
+        )}/availability?interval=minute&from=${encodeURIComponent(
+          day.from
+        )}&till=${encodeURIComponent(day.till)}`;
 
         let availJson;
         try {
@@ -221,16 +272,23 @@ export default async function handler(req, res) {
 
         const ranges = extractBookedMinuteRanges(availJson);
         if (!ranges) {
-          car.statuses[day.date] = { status: "Unknown", detail: "Could not parse availability format from Booqable for this product/day." };
+          car.statuses[day.date] = {
+            status: "Unknown",
+            detail: "Could not parse availability format from Booqable for this product/day.",
+          };
           continue;
         }
 
+        // Determine slot length
         const root = availJson?.data ?? availJson;
-        const minutesArr = root?.minutes ?? (Array.isArray(root) ? root : root?.data);
+        const minutesArr =
+          root?.minutes ||
+          root?.availability ||
+          (Array.isArray(root) ? root : root?.data);
         const totalMinutes = Array.isArray(minutesArr) ? minutesArr.length : 1440;
 
         const buffered = applyBufferToRanges(ranges, BUFFER_MINUTES, totalMinutes);
-        const booked = anyBookedInWindow(buffered);
+        const booked = buffered.length > 0;
 
         const isToday = day.date === todayISO;
         if (booked) {
@@ -242,6 +300,7 @@ export default async function handler(req, res) {
           car.statuses[day.date] = { status: "Available", detail: "" };
         }
 
+        // Heads-up if booked within next 24h window (simple rule: tomorrow also heads-up)
         const tomorrowISO = addDaysISO(todayISO, 1);
         if (booked && day.date === tomorrowISO) {
           car.statuses[day.date].status = "Heads-up";
@@ -249,7 +308,10 @@ export default async function handler(req, res) {
       }
     }
 
-    res.status(200).json({ days, cars });
+    // Final “cars only” filter: remove any remaining add-ons by name (belt & braces)
+    const carsOnly = cars.filter((c) => !looksLikeAddon(c.name));
+
+    res.status(200).json({ days, cars: carsOnly });
   } catch (e) {
     res.status(500).json({ error: e?.message || String(e) });
   }
