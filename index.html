@@ -1,286 +1,204 @@
-// Bubblegum Cars — Availability API (Vercel Serverless)
-//
-// Output format expected by your tab UI:
-//   { days: [{date,label,from,till}], cars: [{id,name,statuses:{[date]:{status,detail}}}] }
-//
-// Rules:
-// - Today + next 3 days
-// - Australia/Brisbane timezone
-// - Day = midnight-to-midnight
-// - 15-minute re-rent buffer policy (staff view)
-// - Cars only (exclude add-ons like Accident Excess, Additional Driver(s), Charging Cable, etc)
-//
-// Fixes:
-// - Avoid minute-by-minute parsing (no more "Could not parse availability format")
-// - Strong caching + backoff to reduce Booqable 429s
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bubblegum Cars — Staff Availability</title>
+    <style>
+      :root { color-scheme: light; }
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 24px; background: #fff; color: #111; }
+      h1 { margin: 0 0 6px; font-size: 22px; }
+      .sub { margin: 0 0 14px; color: #444; font-size: 14px; line-height: 1.35; }
 
-const MEMORY_CACHE = { map: new Map() };
-
-function memGet(key) {
-  const hit = MEMORY_CACHE.map.get(key);
-  if (!hit) return null;
-  if (Date.now() > hit.expiresAt) {
-    MEMORY_CACHE.map.delete(key);
-    return null;
-  }
-  return hit.value;
-}
-function memSet(key, value, ttlMs) {
-  MEMORY_CACHE.map.set(key, { value, expiresAt: Date.now() + ttlMs });
-}
-
-function requireEnv(name) {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing environment variable: ${name}`);
-  return v;
-}
-
-function pad2(n) {
-  return String(n).padStart(2, "0");
-}
-
-function brisbaneTodayISO() {
-  const now = new Date();
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Australia/Brisbane",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(now);
-
-  const y = parts.find((p) => p.type === "year").value;
-  const m = parts.find((p) => p.type === "month").value;
-  const d = parts.find((p) => p.type === "day").value;
-  return `${y}-${m}-${d}`; // YYYY-MM-DD
-}
-
-function addDaysISO(isoDate, days) {
-  const [y, m, d] = isoDate.split("-").map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  dt.setUTCDate(dt.getUTCDate() + days);
-  return `${dt.getUTCFullYear()}-${pad2(dt.getUTCMonth() + 1)}-${pad2(dt.getUTCDate())}`;
-}
-
-function toDMY(isoDate) {
-  const [y, m, d] = isoDate.split("-").map(Number);
-  return `${pad2(d)}-${pad2(m)}-${y}`; // DD-MM-YYYY
-}
-
-function labelForISO(isoDate) {
-  const [y, m, d] = isoDate.split("-").map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  const weekday = dt.toLocaleDateString("en-AU", { weekday: "short", timeZone: "Australia/Brisbane" });
-  const day = dt.toLocaleDateString("en-AU", { day: "2-digit", month: "short", timeZone: "Australia/Brisbane" });
-  return `${weekday} ${day}`;
-}
-
-// ---- Add-on filtering (cars only) ----
-function looksLikeAddon(name) {
-  const n = String(name || "").toLowerCase();
-  const bannedContains = [
-    "add on",
-    "add-on",
-    "addon",
-    "accident excess",
-    "excess",
-    "additional driver",
-    "charging cable",
-    "charger",
-    "insurance",
-    "deposit",
-    "gps",
-    "child seat",
-    "baby seat",
-    "booster",
-  ];
-  return bannedContains.some((k) => n.includes(k));
-}
-
-function normalizeProductsResponse(json) {
-  if (Array.isArray(json?.products)) return json.products;
-  if (Array.isArray(json?.data)) return json.data;
-  if (Array.isArray(json)) return json;
-
-  if (Array.isArray(json?.product_groups)) {
-    const out = [];
-    for (const pg of json.product_groups) {
-      if (Array.isArray(pg?.products)) out.push(...pg.products);
-    }
-    return out;
-  }
-  return [];
-}
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-// Booqable v1 fetch: https://{company_slug}.booqable.com/api/1/... ?api_key=...
-async function booqableFetch(pathWithLeadingSlash, { cacheKey = null, cacheTtlMs = 0 } = {}) {
-  const apiKey = requireEnv("BOOQABLE_API_KEY");
-  const companySlug = requireEnv("BOOQABLE_COMPANY_SLUG");
-  const base = `https://${companySlug}.booqable.com/api/1`;
-
-  const joiner = pathWithLeadingSlash.includes("?") ? "&" : "?";
-  const url = `${base}${pathWithLeadingSlash}${joiner}api_key=${encodeURIComponent(apiKey)}`;
-
-  if (cacheKey && cacheTtlMs > 0) {
-    const cached = memGet(cacheKey);
-    if (cached) return cached;
-  }
-
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const res = await fetch(url, { method: "GET" });
-    const text = await res.text();
-
-    let json;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      json = { raw: text };
-    }
-
-    if (res.status === 429 && attempt < maxAttempts) {
-      const ra = res.headers.get("retry-after");
-      const waitMs = ra ? Math.min(12000, Number(ra) * 1000) : Math.min(12000, 1200 * Math.pow(2, attempt - 1));
-      await sleep(waitMs);
-      continue;
-    }
-
-    if (!res.ok) {
-      const msg = json?.error?.message || json?.message || text || `HTTP ${res.status}`;
-      throw new Error(`Booqable error (${res.status}) on ${pathWithLeadingSlash}: ${msg}`);
-    }
-
-    if (cacheKey && cacheTtlMs > 0) memSet(cacheKey, json, cacheTtlMs);
-    return json;
-  }
-
-  throw new Error("Unexpected error fetching from Booqable");
-}
-
-// ---- Availability interpretation (NO minute parsing dependency) ----
-// We try to find a simple boolean availability if present.
-// If not present, we do a lightweight fallback scan (if minutes exist) to decide booked vs available.
-function extractOverallAvailable(availJson) {
-  const root = availJson?.data ?? availJson;
-
-  if (typeof root?.available === "boolean") return root.available;
-  if (typeof root?.is_available === "boolean") return root.is_available;
-  if (typeof availJson?.available === "boolean") return availJson.available;
-  if (typeof availJson?.is_available === "boolean") return availJson.is_available;
-
-  if (typeof root?.status === "string") {
-    const s = root.status.toLowerCase();
-    if (s === "available") return true;
-    if (s === "unavailable" || s === "booked") return false;
-  }
-
-  const minutes = root?.minutes || root?.availability || (Array.isArray(root) ? root : null);
-  if (Array.isArray(minutes) && minutes.length > 0) {
-    let saw = false;
-    for (const x of minutes) {
-      if (typeof x === "boolean") {
-        saw = true;
-        if (x === false) return false;
-      } else if (typeof x?.available === "boolean") {
-        saw = true;
-        if (x.available === false) return false;
-      } else if (typeof x?.is_available === "boolean") {
-        saw = true;
-        if (x.is_available === false) return false;
-      } else if (typeof x?.status === "string") {
-        saw = true;
-        if (x.status.toLowerCase() !== "available") return false;
+      .version {
+        display: inline-block;
+        margin: 0 0 14px;
+        padding: 6px 10px;
+        border-radius: 10px;
+        border: 1px solid #111;
+        background: #111;
+        color: #fff;
+        font-weight: 800;
+        font-size: 12px;
+        letter-spacing: 0.3px;
       }
-    }
-    if (saw) return true;
-  }
 
-  return null;
-}
+      .topbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 6px 0 14px; }
+      button { padding: 10px 12px; border-radius: 10px; border: 1px solid #ddd; background: #f7f7f7; cursor: pointer; }
+      button:hover { background: #f0f0f0; }
+      .pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid #eee; border-radius: 999px; font-size: 12px; color: #333; background: #fafafa; }
 
-export default async function handler(req, res) {
-  try {
-    if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
+      .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 14px 0 16px; }
+      .tab { padding: 10px 12px; border-radius: 999px; border: 1px solid #ddd; background: #fff; cursor: pointer; font-weight: 800; }
+      .tab[aria-selected="true"] { background: #111; color: #fff; border-color: #111; }
 
-    // Edge caching (major 429 reduction)
-    res.setHeader("Cache-Control", "s-maxage=60, stale-while-revalidate=300");
+      .panel { border: 1px solid #eee; border-radius: 14px; padding: 14px; }
+      .panelhead { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-bottom: 10px; }
+      .paneltitle { font-size: 16px; font-weight: 900; }
+      .panelmeta { font-size: 12px; color: #666; }
 
-    const todayISO = brisbaneTodayISO();
-    const tomorrowISO = addDaysISO(todayISO, 1);
+      table { width: 100%; border-collapse: collapse; }
+      th, td { text-align: left; padding: 10px 8px; border-top: 1px solid #f0f0f0; vertical-align: top; }
+      th { font-size: 12px; color: #666; font-weight: 800; border-top: none; }
+      .car { font-weight: 900; }
+      .id { font-size: 12px; color: #777; margin-top: 2px; }
 
-    const days = [0, 1, 2, 3].map((i) => {
-      const iso = addDaysISO(todayISO, i);
-      return { date: iso, label: labelForISO(iso), from: toDMY(iso), till: toDMY(iso) };
-    });
+      .status { font-weight: 900; }
+      .avail { color: #0a7a2a; }
+      .booked { color: #b42318; }
+      .heads { color: #8a5b00; }
+      .unknown { color: #666; }
 
-    // Cache product list for 10 minutes
-    const productsResp = await booqableFetch("/products", { cacheKey: "products", cacheTtlMs: 10 * 60 * 1000 });
-    let products = normalizeProductsResponse(productsResp);
+      .detail { font-size: 12px; color: #333; line-height: 1.35; margin-top: 3px; }
+      .loading { opacity: 0.7; }
+      .err { color: #b42318; font-weight: 900; margin-top: 12px; white-space: pre-wrap; }
 
-    // Fallback
-    if (!products || products.length === 0) {
-      const pgsResp = await booqableFetch("/product_groups", { cacheKey: "product_groups", cacheTtlMs: 10 * 60 * 1000 });
-      products = normalizeProductsResponse(pgsResp);
-    }
+      @media (max-width: 700px) {
+        th:nth-child(3), td:nth-child(3) { display: none; }
+      }
+    </style>
+  </head>
 
-    // Cars only
-    const cars = (products || [])
-      .filter((p) => !looksLikeAddon(p?.name || p?.title || p?.product_group_name || ""))
-      .map((p) => ({ id: p.id, name: p.name || p.title || p.product_group_name || "Unnamed" }))
-      .filter((c) => c.id);
+  <body>
+    <div class="version">UI VERSION: TABS-V1</div>
 
-    // Cache full computed payload for 60s (big reduction)
-    const finalKey = `final:${todayISO}`;
-    const cachedFinal = memGet(finalKey);
-    if (cachedFinal) return res.status(200).json(cachedFinal);
+    <h1>Bubblegum Cars — Staff Availability</h1>
+    <p class="sub">
+      Shows <b>Today + next 3 days</b> in <b>Brisbane time</b>. Day = midnight-to-midnight.
+      Includes a <b>15-minute re-rent buffer</b>. Anyone with the link can view.
+    </p>
 
-    const BUFFER_MINUTES = 15;
+    <div class="topbar">
+      <button id="refreshBtn">Refresh</button>
+      <span class="pill">Timezone: Australia/Brisbane</span>
+      <span class="pill">Range: 4 days</span>
+      <span class="pill">Buffer: 15 minutes</span>
+      <span class="pill">View: Available / Booked / Heads-up</span>
+    </div>
 
-    for (const car of cars) {
-      car.statuses = {};
+    <div id="tabs" class="tabs"></div>
 
-      for (const day of days) {
-        // Day-level query (no interval=minute)
-        const path = `/products/${encodeURIComponent(car.id)}/availability?from=${encodeURIComponent(day.from)}&till=${encodeURIComponent(day.till)}`;
+    <div id="panel" class="panel loading">Loading…</div>
+    <div id="error" class="err" style="display:none;"></div>
 
-        let availJson;
-        try {
-          availJson = await booqableFetch(path, {
-            cacheKey: `avail:${car.id}:${day.date}`,
-            cacheTtlMs: 60 * 1000,
+    <script>
+      const tabsEl = document.getElementById("tabs");
+      const panelEl = document.getElementById("panel");
+      const errBox = document.getElementById("error");
+      const refreshBtn = document.getElementById("refreshBtn");
+
+      let DATA = null;
+      let selectedDate = null;
+
+      function safeText(s) {
+        return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+          "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+        }[c]));
+      }
+
+      function statusClass(status) {
+        if (status === "Available") return "avail";
+        if (status === "Booked") return "booked";
+        if (status === "Heads-up") return "heads";
+        return "unknown";
+      }
+
+      function renderTabs(days) {
+        tabsEl.innerHTML = "";
+        for (const day of days) {
+          const btn = document.createElement("button");
+          btn.className = "tab";
+          btn.type = "button";
+          btn.textContent = `${day.label} (${day.date})`;
+          btn.setAttribute("aria-selected", day.date === selectedDate ? "true" : "false");
+          btn.addEventListener("click", () => {
+            selectedDate = day.date;
+            renderTabs(days);
+            renderPanel();
           });
-        } catch (e) {
-          car.statuses[day.date] = { status: "Unknown", detail: String(e.message || e) };
-          continue;
-        }
-
-        const overall = extractOverallAvailable(availJson);
-
-        if (overall === true) {
-          car.statuses[day.date] = { status: "Available", detail: "" };
-        } else if (overall === false) {
-          const isHeadsUp = day.date === todayISO || day.date === tomorrowISO;
-          car.statuses[day.date] = {
-            status: isHeadsUp ? "Heads-up" : "Booked",
-            detail: `Unavailable during day window (staff view includes ${BUFFER_MINUTES}-minute re-rent buffer policy).`,
-          };
-        } else {
-          car.statuses[day.date] = {
-            status: "Unknown",
-            detail: "Availability returned in an unsupported format (we can extend parsing once we see a sample payload).",
-          };
+          tabsEl.appendChild(btn);
         }
       }
-    }
 
-    const payload = { days, cars };
-    memSet(finalKey, payload, 60 * 1000);
-    return res.status(200).json(payload);
-  } catch (e) {
-    res.setHeader("Cache-Control", "no-store");
-    return res.status(500).json({ error: e?.message || String(e) });
-  }
-}
+      function renderPanel() {
+        if (!DATA) return;
+        const day = DATA.days.find(d => d.date === selectedDate) || DATA.days[0];
+        if (!day) return;
+
+        const cars = DATA.cars || [];
+        const rank = { "Heads-up": 0, "Booked": 1, "Available": 2, "Unknown": 3 };
+
+        const rows = cars.map(car => {
+          const st = (car.statuses && car.statuses[day.date]) ? car.statuses[day.date] : { status: "Unknown", detail: "" };
+          return { name: car.name || "Unnamed", id: car.id || "", status: st.status || "Unknown", detail: st.detail || "" };
+        }).sort((a,b) => {
+          const ra = rank[a.status] ?? 99;
+          const rb = rank[b.status] ?? 99;
+          if (ra !== rb) return ra - rb;
+          return a.name.localeCompare(b.name);
+        });
+
+        let html = `
+          <div class="panelhead">
+            <div class="paneltitle">${safeText(day.label)} — ${safeText(day.date)}</div>
+            <div class="panelmeta">Brisbane time · midnight–midnight · 15-min buffer</div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th style="width:40%">Car</th>
+                <th style="width:20%">Status</th>
+                <th style="width:40%">Detail</th>
+              </tr>
+            </thead>
+            <tbody>
+        `;
+
+        for (const r of rows) {
+          html += `
+            <tr>
+              <td>
+                <div class="car">${safeText(r.name)}</div>
+                ${r.id ? `<div class="id">ID: ${safeText(r.id)}</div>` : ``}
+              </td>
+              <td><div class="status ${statusClass(r.status)}">${safeText(r.status)}</div></td>
+              <td><div class="detail">${safeText(r.detail)}</div></td>
+            </tr>
+          `;
+        }
+
+        html += `</tbody></table>`;
+        panelEl.classList.remove("loading");
+        panelEl.innerHTML = html;
+      }
+
+      async function load() {
+        panelEl.classList.add("loading");
+        panelEl.textContent = "Loading…";
+        errBox.style.display = "none";
+
+        try {
+          const res = await fetch("/api/availability", { cache: "no-store" });
+          const text = await res.text();
+          let json;
+          try { json = JSON.parse(text); } catch { throw new Error("Server did not return JSON:\n" + text); }
+          if (!res.ok) throw new Error(json.error || "Request failed");
+
+          DATA = json;
+          selectedDate = DATA?.days?.[0]?.date || null;
+
+          renderTabs(DATA.days || []);
+          renderPanel();
+        } catch (e) {
+          panelEl.classList.remove("loading");
+          panelEl.textContent = "";
+          errBox.style.display = "block";
+          errBox.textContent = "Error:\n" + (e?.message || String(e));
+        }
+      }
+
+      refreshBtn.addEventListener("click", load);
+      load();
+    </script>
+  </body>
+</html>
