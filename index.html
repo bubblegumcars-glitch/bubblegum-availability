@@ -3,32 +3,44 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Bubblegum Cars — Availability</title>
+    <title>Bubblegum Cars — Staff Availability</title>
     <style>
       :root { color-scheme: light; }
       body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 24px; background: #fff; color: #111; }
-      h1 { margin: 0 0 8px; font-size: 22px; }
-      .sub { margin: 0 0 16px; color: #444; font-size: 14px; line-height: 1.35; }
+      h1 { margin: 0 0 6px; font-size: 22px; }
+      .sub { margin: 0 0 14px; color: #444; font-size: 14px; line-height: 1.35; }
 
-      .topbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 10px 0 14px; }
+      .version {
+        display: inline-block;
+        margin: 0 0 14px;
+        padding: 6px 10px;
+        border-radius: 10px;
+        border: 1px solid #111;
+        background: #111;
+        color: #fff;
+        font-weight: 800;
+        font-size: 12px;
+        letter-spacing: 0.3px;
+      }
+
+      .topbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 6px 0 14px; }
       button { padding: 10px 12px; border-radius: 10px; border: 1px solid #ddd; background: #f7f7f7; cursor: pointer; }
       button:hover { background: #f0f0f0; }
-
       .pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid #eee; border-radius: 999px; font-size: 12px; color: #333; background: #fafafa; }
 
       .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 14px 0 16px; }
-      .tab { padding: 10px 12px; border-radius: 999px; border: 1px solid #ddd; background: #fff; cursor: pointer; font-weight: 600; }
+      .tab { padding: 10px 12px; border-radius: 999px; border: 1px solid #ddd; background: #fff; cursor: pointer; font-weight: 800; }
       .tab[aria-selected="true"] { background: #111; color: #fff; border-color: #111; }
 
       .panel { border: 1px solid #eee; border-radius: 14px; padding: 14px; }
       .panelhead { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-bottom: 10px; }
-      .paneltitle { font-size: 16px; font-weight: 800; }
+      .paneltitle { font-size: 16px; font-weight: 900; }
       .panelmeta { font-size: 12px; color: #666; }
 
       table { width: 100%; border-collapse: collapse; }
       th, td { text-align: left; padding: 10px 8px; border-top: 1px solid #f0f0f0; vertical-align: top; }
-      th { font-size: 12px; color: #666; font-weight: 700; border-top: none; }
-      .car { font-weight: 800; }
+      th { font-size: 12px; color: #666; font-weight: 800; border-top: none; }
+      .car { font-weight: 900; }
       .id { font-size: 12px; color: #777; margin-top: 2px; }
 
       .status { font-weight: 900; }
@@ -39,15 +51,17 @@
 
       .detail { font-size: 12px; color: #333; line-height: 1.35; margin-top: 3px; }
       .loading { opacity: 0.7; }
-      .err { color: #b42318; font-weight: 800; margin-top: 12px; white-space: pre-wrap; }
+      .err { color: #b42318; font-weight: 900; margin-top: 12px; white-space: pre-wrap; }
 
       @media (max-width: 700px) {
-        th:nth-child(3), td:nth-child(3) { display: none; } /* hide ID column on small screens */
+        th:nth-child(3), td:nth-child(3) { display: none; }
       }
     </style>
   </head>
 
   <body>
+    <div class="version">UI VERSION: TABS-V1</div>
+
     <h1>Bubblegum Cars — Staff Availability</h1>
     <p class="sub">
       Shows <b>Today + next 3 days</b> in <b>Brisbane time</b>. Day = midnight-to-midnight.
@@ -86,7 +100,6 @@
         if (status === "Available") return "avail";
         if (status === "Booked") return "booked";
         if (status === "Heads-up") return "heads";
-        if (status === "Unknown") return "unknown";
         return "unknown";
       }
 
@@ -109,26 +122,16 @@
 
       function renderPanel() {
         if (!DATA) return;
-
         const day = DATA.days.find(d => d.date === selectedDate) || DATA.days[0];
         if (!day) return;
 
         const cars = DATA.cars || [];
+        const rank = { "Heads-up": 0, "Booked": 1, "Available": 2, "Unknown": 3 };
 
-        // Build rows for selected day
         const rows = cars.map(car => {
           const st = (car.statuses && car.statuses[day.date]) ? car.statuses[day.date] : { status: "Unknown", detail: "" };
-          return {
-            name: car.name || "Unnamed",
-            id: car.id || "",
-            status: st.status || "Unknown",
-            detail: st.detail || ""
-          };
-        });
-
-        // Sort: Heads-up, Booked, Available, Unknown; then name
-        const rank = { "Heads-up": 0, "Booked": 1, "Available": 2, "Unknown": 3 };
-        rows.sort((a,b) => {
+          return { name: car.name || "Unnamed", id: car.id || "", status: st.status || "Unknown", detail: st.detail || "" };
+        }).sort((a,b) => {
           const ra = rank[a.status] ?? 99;
           const rb = rank[b.status] ?? 99;
           if (ra !== rb) return ra - rb;
@@ -158,12 +161,8 @@
                 <div class="car">${safeText(r.name)}</div>
                 ${r.id ? `<div class="id">ID: ${safeText(r.id)}</div>` : ``}
               </td>
-              <td>
-                <div class="status ${statusClass(r.status)}">${safeText(r.status)}</div>
-              </td>
-              <td>
-                <div class="detail">${safeText(r.detail)}</div>
-              </td>
+              <td><div class="status ${statusClass(r.status)}">${safeText(r.status)}</div></td>
+              <td><div class="detail">${safeText(r.detail)}</div></td>
             </tr>
           `;
         }
@@ -186,9 +185,7 @@
           if (!res.ok) throw new Error(json.error || "Request failed");
 
           DATA = json;
-
-          // Default to first day (Today) the API returns
-          selectedDate = (DATA.days && DATA.days[0] && DATA.days[0].date) ? DATA.days[0].date : null;
+          selectedDate = DATA?.days?.[0]?.date || null;
 
           renderTabs(DATA.days || []);
           renderPanel();
