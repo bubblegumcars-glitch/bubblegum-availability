@@ -1,16 +1,12 @@
 // Bubblegum Cars — Availability API (Vercel Serverless)
 //
-// FINAL PARSER FOR YOUR BOOQABLE SHAPE
-// Your /availability response is numeric:
-//   { stock_count: 1, available: 1, plannable: 1, planned: 1, needed: 0 }
-// We treat: available > 0 => Available, available == 0 => Booked
+// Day view + Times view (minute availability parsing)
 //
-// Rules:
 // - Today + next 3 days (Brisbane time)
-// - midnight-to-midnight days
-// - 15-minute re-rent buffer policy (staff view note)
+// - Day = midnight-to-midnight
+// - 15-minute re-rent buffer (we extend the "back" time by 15 minutes)
 // - Cars only (exclude add-ons)
-// - Caching + 429 backoff
+// - Rate limit friendly (caching + 429 backoff)
 
 const MEMORY_CACHE = { map: new Map() };
 
@@ -98,7 +94,6 @@ function normalizeProductsResponse(json) {
   if (Array.isArray(json?.products)) return json.products;
   if (Array.isArray(json?.data)) return json.data;
   if (Array.isArray(json)) return json;
-
   if (Array.isArray(json?.product_groups)) {
     const out = [];
     for (const pg of json.product_groups) {
@@ -157,15 +152,139 @@ async function booqableFetch(pathWithLeadingSlash, { cacheKey = null, cacheTtlMs
   throw new Error("Unexpected error fetching from Booqable");
 }
 
-// ✅ Your account: available is a NUMBER (0/1/etc)
+// Day-level: available is numeric in your account (0/1/etc)
 function extractOverallAvailable(availJson) {
   const root = availJson?.data ?? availJson;
   const val = root?.available ?? availJson?.available;
-
   if (typeof val === "number") return val > 0;
   if (typeof val === "boolean") return val;
+  return null;
+}
+
+function fmtBrisbaneTime(dateObj) {
+  // 24h HH:mm in Brisbane time
+  return new Intl.DateTimeFormat("en-AU", {
+    timeZone: "Australia/Brisbane",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(dateObj);
+}
+
+function parseMinuteSeries(minJson) {
+  // We try several common shapes.
+  const root = minJson?.data ?? minJson;
+
+  // Shape A: array of points [{ at: "...", available: 0/1 }, ...]
+  const arrCandidates = [
+    root,
+    root?.items,
+    root?.availability,
+    root?.minutes,
+    root?.data,
+  ].filter(Array.isArray);
+
+  for (const arr of arrCandidates) {
+    const points = [];
+    for (const it of arr) {
+      if (!it || typeof it !== "object") continue;
+      const at = it.at || it.time || it.timestamp || it.starts_at || it.start || it.datetime;
+      const av = it.available ?? it.availability ?? it.value ?? it.count;
+      if (!at) continue;
+      const dt = new Date(at);
+      if (Number.isNaN(dt.getTime())) continue;
+      // available might be boolean or number
+      let available = null;
+      if (typeof av === "number") available = av > 0;
+      else if (typeof av === "boolean") available = av;
+      // if no explicit available, skip
+      if (available === null) continue;
+      points.push({ t: dt, available });
+    }
+    if (points.length) return points.sort((a, b) => a.t - b.t);
+  }
+
+  // Shape B: object keyed by timestamp -> { available: 0/1 } OR number
+  if (root && typeof root === "object") {
+    const points = [];
+    for (const [k, v] of Object.entries(root)) {
+      // keys that are not timestamps: ignore
+      if (!k || k.length < 10) continue;
+      const dt = new Date(k);
+      if (Number.isNaN(dt.getTime())) continue;
+
+      let available = null;
+      if (typeof v === "number") available = v > 0;
+      else if (typeof v === "boolean") available = v;
+      else if (v && typeof v === "object") {
+        if (typeof v.available === "number") available = v.available > 0;
+        else if (typeof v.available === "boolean") available = v.available;
+      }
+      if (available === null) continue;
+      points.push({ t: dt, available });
+    }
+    if (points.length) return points.sort((a, b) => a.t - b.t);
+  }
 
   return null;
+}
+
+function rangesFromMinutePoints(points) {
+  // Convert minute points into blocked ranges (available=false)
+  // Assumes points are sorted by time.
+  const ranges = [];
+  let cur = null;
+
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    if (p.available === false) {
+      if (!cur) cur = { start: p.t, end: p.t };
+      cur.end = p.t;
+    } else {
+      if (cur) {
+        ranges.push(cur);
+        cur = null;
+      }
+    }
+  }
+  if (cur) ranges.push(cur);
+
+  // Expand each range end by 1 minute (since last point is inclusive-ish)
+  for (const r of ranges) {
+    r.end = new Date(r.end.getTime() + 60 * 1000);
+  }
+
+  return ranges;
+}
+
+function summarizeRanges(ranges, bufferMinutes) {
+  if (!ranges || ranges.length === 0) return null;
+
+  // Merge ranges that touch/overlap
+  const merged = [];
+  for (const r of ranges.sort((a, b) => a.start - b.start)) {
+    if (merged.length === 0) {
+      merged.push({ start: r.start, end: r.end });
+      continue;
+    }
+    const last = merged[merged.length - 1];
+    if (r.start.getTime() <= last.end.getTime()) {
+      last.end = new Date(Math.max(last.end.getTime(), r.end.getTime()));
+    } else {
+      merged.push({ start: r.start, end: r.end });
+    }
+  }
+
+  // Apply re-rent buffer on END time (return time + buffer)
+  const buffered = merged.map((r) => ({
+    start: r.start,
+    end: new Date(r.end.getTime() + bufferMinutes * 60 * 1000),
+  }));
+
+  // Format up to 3 ranges
+  const parts = buffered.slice(0, 3).map((r) => `Out ${fmtBrisbaneTime(r.start)} → Back ${fmtBrisbaneTime(r.end)}`);
+  const more = buffered.length > 3 ? ` (+${buffered.length - 3} more)` : "";
+  return parts.join(" • ") + more;
 }
 
 export default async function handler(req, res) {
@@ -173,15 +292,22 @@ export default async function handler(req, res) {
     if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
 
     // Edge cache (reduces rate limits)
-    res.setHeader("Cache-Control", "s-maxage=60, stale-while-revalidate=300");
+    res.setHeader("Cache-Control", "s-maxage=30, stale-while-revalidate=300");
 
     const todayISO = brisbaneTodayISO();
     const tomorrowISO = addDaysISO(todayISO, 1);
-
     const days = [0, 1, 2, 3].map((i) => {
       const iso = addDaysISO(todayISO, i);
       return { date: iso, label: labelForISO(iso), from: toDMY(iso), till: toDMY(iso) };
     });
+
+    // UI calls with ?date=YYYY-MM-DD to get data for the selected tab only
+    const dateParam = (req.query?.date || "").toString().trim();
+    const selectedDay = dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam)
+      ? days.find((d) => d.date === dateParam) || null
+      : null;
+
+    const includeTimes = (req.query?.times || "").toString() === "1"; // UI will use this
 
     // Products list cached 10 min
     const productsResp = await booqableFetch("/products", { cacheKey: "products", cacheTtlMs: 10 * 60 * 1000 });
@@ -194,56 +320,115 @@ export default async function handler(req, res) {
 
     const cars = (products || [])
       .filter((p) => !looksLikeAddon(p?.name || p?.title || p?.product_group_name || ""))
-      .map((p) => ({ id: p.id, name: p.name || p.title || p.product_group_name || "Unnamed" }))
+      .map((p) => ({ id: p.id, name: (p.name || p.title || p.product_group_name || "Unnamed").trim() }))
       .filter((c) => c.id);
-
-    // Full response cache 60s
-    const finalKey = `final:${todayISO}`;
-    const cachedFinal = memGet(finalKey);
-    if (cachedFinal) return res.status(200).json(cachedFinal);
 
     const BUFFER_MINUTES = 15;
 
-    for (const car of cars) {
-      car.statuses = {};
+    // If no selected day, return the full 4-day grid (no times to protect rate limits)
+    if (!selectedDay) {
+      const cacheKey = `grid:${todayISO}`;
+      const cached = memGet(cacheKey);
+      if (cached) return res.status(200).json(cached);
 
-      for (const day of days) {
-        const path = `/products/${encodeURIComponent(car.id)}/availability?from=${encodeURIComponent(day.from)}&till=${encodeURIComponent(day.till)}`;
+      for (const car of cars) {
+        car.statuses = {};
+        for (const day of days) {
+          const path = `/products/${encodeURIComponent(car.id)}/availability?from=${encodeURIComponent(day.from)}&till=${encodeURIComponent(day.till)}`;
+          try {
+            const availJson = await booqableFetch(path, { cacheKey: `day:${car.id}:${day.date}`, cacheTtlMs: 60 * 1000 });
+            const overall = extractOverallAvailable(availJson);
 
-        let availJson;
-        try {
-          // Per car/day cached 60s
-          availJson = await booqableFetch(path, { cacheKey: `avail:${car.id}:${day.date}`, cacheTtlMs: 60 * 1000 });
-        } catch (e) {
-          car.statuses[day.date] = { status: "Unknown", detail: String(e.message || e) };
-          continue;
-        }
-
-        const overall = extractOverallAvailable(availJson);
-
-        if (overall === true) {
-          car.statuses[day.date] = { status: "Available", detail: "" };
-        } else if (overall === false) {
-          const isHeadsUp = day.date === todayISO || day.date === tomorrowISO;
-          car.statuses[day.date] = {
-            status: isHeadsUp ? "Heads-up" : "Booked",
-            detail: `Unavailable during day window (staff view includes ${BUFFER_MINUTES}-minute re-rent buffer policy).`,
-          };
-        } else {
-          car.statuses[day.date] = {
-            status: "Unknown",
-            detail: "Unexpected availability payload (missing numeric 'available').",
-          };
+            if (overall === true) car.statuses[day.date] = { status: "Available", detail: "", times: "" };
+            else if (overall === false) {
+              const isHeadsUp = day.date === todayISO || day.date === tomorrowISO;
+              car.statuses[day.date] = {
+                status: isHeadsUp ? "Heads-up" : "Booked",
+                detail: "",
+                times: "",
+              };
+            } else {
+              car.statuses[day.date] = { status: "Unknown", detail: "Unexpected availability payload.", times: "" };
+            }
+          } catch (e) {
+            car.statuses[day.date] = { status: "Unknown", detail: String(e.message || e), times: "" };
+          }
         }
       }
+
+      const payload = { days, cars };
+      memSet(cacheKey, payload, 30 * 1000);
+      return res.status(200).json(payload);
     }
 
-    const payload = { days, cars };
-    memSet(finalKey, payload, 60 * 1000);
+    // Selected-day mode: return only ONE day, and (optionally) times.
+    const day = selectedDay;
+    const cacheKey = `dayview:${day.date}:times=${includeTimes ? "1" : "0"}`;
+    const cached = memGet(cacheKey);
+    if (cached) return res.status(200).json(cached);
+
+    const outCars = [];
+
+    for (const car of cars) {
+      const statusObj = { status: "Unknown", detail: "", times: "" };
+
+      // Day-level status first (cheap)
+      try {
+        const pathDay = `/products/${encodeURIComponent(car.id)}/availability?from=${encodeURIComponent(day.from)}&till=${encodeURIComponent(day.till)}`;
+        const availJson = await booqableFetch(pathDay, { cacheKey: `day:${car.id}:${day.date}`, cacheTtlMs: 60 * 1000 });
+        const overall = extractOverallAvailable(availJson);
+
+        if (overall === true) statusObj.status = "Available";
+        else if (overall === false) {
+          const isHeadsUp = day.date === todayISO || day.date === tomorrowISO;
+          statusObj.status = isHeadsUp ? "Heads-up" : "Booked";
+        } else {
+          statusObj.status = "Unknown";
+          statusObj.detail = "Unexpected availability payload.";
+        }
+      } catch (e) {
+        statusObj.status = "Unknown";
+        statusObj.detail = String(e.message || e);
+      }
+
+      // Times (only when asked) + only when not Available (to reduce calls)
+      if (includeTimes && (statusObj.status === "Booked" || statusObj.status === "Heads-up")) {
+        try {
+          const pathMin =
+            `/products/${encodeURIComponent(car.id)}/availability` +
+            `?interval=minute&from=${encodeURIComponent(day.from)}&till=${encodeURIComponent(day.till)}`;
+
+          const minJson = await booqableFetch(pathMin, { cacheKey: `min:${car.id}:${day.date}`, cacheTtlMs: 60 * 1000 });
+
+          const points = parseMinuteSeries(minJson);
+          if (!points) {
+            statusObj.times = "";
+            statusObj.detail = "Could not read minute-by-minute availability from Booqable for this day.";
+          } else {
+            const ranges = rangesFromMinutePoints(points).filter((r) => r && r.start && r.end);
+            const summary = summarizeRanges(ranges, BUFFER_MINUTES);
+            statusObj.times = summary || "";
+            // keep detail empty if we got a summary
+            if (statusObj.times) statusObj.detail = "";
+          }
+        } catch (e) {
+          statusObj.times = "";
+          statusObj.detail = String(e.message || e);
+        }
+      }
+
+      outCars.push({
+        id: car.id,
+        name: car.name,
+        statuses: { [day.date]: statusObj },
+      });
+    }
+
+    const payload = { days, selectedDate: day.date, cars: outCars };
+    memSet(cacheKey, payload, 30 * 1000);
     return res.status(200).json(payload);
   } catch (e) {
     res.setHeader("Cache-Control", "no-store");
     return res.status(500).json({ error: e?.message || String(e) });
   }
 }
-// deploy nudge
