@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bubblegum Cars — Availability</title>
+    <style>
+      :root { color-scheme: light; }
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 24px; background: #fff; color: #111; }
+      h1 { margin: 0 0 8px; font-size: 22px; }
+      .sub { margin: 0 0 16px; color: #444; font-size: 14px; }
+      .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 12px 0 18px; }
+      button { padding: 10px 12px; border-radius: 10px; border: 1px solid #ddd; background: #f7f7f7; cursor: pointer; }
+      button:hover { background: #f0f0f0; }
+      .pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid #eee; border-radius: 999px; font-size: 12px; color: #333; background: #fafafa; }
+      .grid { display: grid; grid-template-columns: 280px repeat(4, minmax(220px, 1fr)); gap: 10px; align-items: stretch; }
+      .cell { border: 1px solid #eee; border-radius: 14px; padding: 12px; background: #fff; min-height: 54px; }
+      .head { font-weight: 700; }
+      .muted { color: #666; font-size: 12px; }
+      .car { display: flex; flex-direction: column; gap: 4px; }
+      .car-name { font-weight: 700; }
+      .status { font-weight: 700; }
+      .avail { color: #0a7a2a; }
+      .booked { color: #b42318; }
+      .heads { color: #8a5b00; }
+      .small { font-size: 12px; color: #333; line-height: 1.3; }
+      .err { color: #b42318; font-weight: 700; margin-top: 10px; white-space: pre-wrap; }
+      .loading { opacity: 0.7; }
+      @media (max-width: 1100px) {
+        .grid { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Bubblegum Cars — Staff Availability</h1>
+    <p class="sub">
+      Shows <b>Today + next 3 days</b> in <b>Brisbane time</b>. Day = midnight-to-midnight.
+      Includes a <b>15-minute re-rent buffer</b>. Anyone with the link can view.
+    </p>
+
+    <div class="bar">
+      <button id="refreshBtn">Refresh</button>
+      <span class="pill">Timezone: Australia/Brisbane</span>
+      <span class="pill">Range: 4 days</span>
+      <span class="pill">Buffer: 15 minutes</span>
+      <span class="pill">View: Available / Booked / Heads-up</span>
+    </div>
+
+    <div id="app" class="loading">Loading…</div>
+    <div id="error" class="err" style="display:none;"></div>
+
+    <script>
+      const app = document.getElementById("app");
+      const errBox = document.getElementById("error");
+      const refreshBtn = document.getElementById("refreshBtn");
+
+      function safeText(s) {
+        return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+      }
+
+      function render(data) {
+        errBox.style.display = "none";
+        app.classList.remove("loading");
+
+        const days = data.days;
+        const cars = data.cars;
+
+        let html = `<div class="grid">`;
+        html += `<div class="cell head">Car</div>`;
+        for (const day of days) {
+          html += `<div class="cell head">${safeText(day.label)}<div class="muted">${safeText(day.date)}</div></div>`;
+        }
+
+        for (const car of cars) {
+          html += `<div class="cell car"><div class="car-name">${safeText(car.name)}</div><div class="muted">ID: ${safeText(car.id)}</div></div>`;
+
+          for (const day of days) {
+            const st = car.statuses[day.date] || { status: "Unknown", detail: "" };
+            const cls =
+              st.status === "Available" ? "avail" :
+              st.status === "Booked" ? "booked" :
+              st.status === "Heads-up" ? "heads" : "";
+
+            html += `<div class="cell">
+              <div class="status ${cls}">${safeText(st.status)}</div>
+              <div class="small">${safeText(st.detail || "")}</div>
+            </div>`;
+          }
+        }
+
+        html += `</div>`;
+        app.innerHTML = html;
+      }
+
+      async function load() {
+        app.classList.add("loading");
+        app.textContent = "Loading…";
+        errBox.style.display = "none";
+
+        try {
+          const res = await fetch("/api/availability", { cache: "no-store" });
+          const text = await res.text();
+          let json;
+          try { json = JSON.parse(text); } catch { throw new Error("Server did not return JSON:\n" + text); }
+          if (!res.ok) throw new Error(json.error || "Request failed");
+          render(json);
+        } catch (e) {
+          app.classList.remove("loading");
+          app.textContent = "";
+          errBox.style.display = "block";
+          errBox.textContent = "Error:\n" + (e?.message || String(e));
+        }
+      }
+
+      refreshBtn.addEventListener("click", load);
+      load();
+    </script>
+  </body>
+</html>
