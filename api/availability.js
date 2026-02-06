@@ -193,7 +193,19 @@ export default async function handler(req, res) {
         
         // Step 3: Filter to rental cars only
         const allProducts = productsData.data || productsData.products || [];
+        
+        // Debug: Log first product structure
+        if (allProducts.length > 0) {
+            console.log('Sample product structure:', JSON.stringify(allProducts[0], null, 2));
+        }
+        
         const cars = allProducts.filter(isRentalCar);
+        
+        // Debug: Log filtered cars with their IDs
+        console.log(`Filtered ${cars.length} cars from ${allProducts.length} products`);
+        cars.forEach(car => {
+            console.log(`Car: ${car.name}, id: ${car.id}, product_group_id: ${car.product_group_id}`);
+        });
 
         if (cars.length === 0) {
             return res.status(200).json({
@@ -216,34 +228,69 @@ export default async function handler(req, res) {
         const carsWithAvailability = await Promise.all(
             cars.map(async (car) => {
                 try {
-                    // IMPORTANT: Use product_group_id if available, otherwise fall back to id
-                    // Booqable sometimes requires the group ID for availability endpoint
-                    const productId = car.product_group_id || car.id;
+                    // IMPORTANT: Try multiple ID fields to find what works
+                    // Booqable can use different ID fields depending on setup
+                    const possibleIds = [
+                        car.product_group_id,
+                        car.id,
+                        car.item_id,
+                        car.slug
+                    ].filter(id => id); // Remove null/undefined values
                     
-                    const availabilityURL = `${baseURL}/products/${productId}/availability?interval=minute&from=${fromDate}&till=${tillDate}`;
-                    
-                    const availabilityResponse = await fetch(availabilityURL, {
-                        headers: {
-                            'Authorization': `Bearer ${BOOQABLE_API_KEY}`,
-                            'Content-Type': 'application/json'
-                        }
+                    console.log(`${car.name} - Available IDs:`, {
+                        id: car.id,
+                        product_group_id: car.product_group_id,
+                        item_id: car.item_id,
+                        slug: car.slug
                     });
+                    
+                    // Try each ID until one works
+                    let availabilityData = null;
+                    let workingId = null;
+                    
+                    for (const productId of possibleIds) {
+                        const availabilityURL = `${baseURL}/products/${productId}/availability?interval=minute&from=${fromDate}&till=${tillDate}`;
+                        
+                        console.log(`Trying ${car.name} with ID: ${productId}`);
+                        
+                        const availabilityResponse = await fetch(availabilityURL, {
+                            headers: {
+                                'Authorization': `Bearer ${BOOQABLE_API_KEY}`,
+                                'Content-Type': 'application/json'
+                            }
+                        });
 
-                    if (!availabilityResponse.ok) {
-                        console.error(`Availability fetch failed for ${car.name}:`, availabilityResponse.status);
+                        if (availabilityResponse.ok) {
+                            availabilityData = await availabilityResponse.json();
+                            workingId = productId;
+                            console.log(`SUCCESS: ${car.name} works with ID: ${productId}`);
+                            break;
+                        } else {
+                            console.log(`FAILED: ${car.name} with ID ${productId} returned ${availabilityResponse.status}`);
+                        }
+                    }
+
+                    if (!availabilityData) {
+                        console.error(`All IDs failed for ${car.name}`);
                         return {
                             name: car.name.trim(),
                             unavailable: [],
-                            error: `API error: ${availabilityResponse.status}`
+                            debug: {
+                                triedIds: possibleIds,
+                                allFailed: true
+                            },
+                            error: 'All ID attempts failed'
                         };
                     }
 
-                    const availabilityData = await availabilityResponse.json();
                     const unavailableBlocks = parseAvailability(availabilityData, startDate, endDate);
 
                     return {
                         name: car.name.trim(),
-                        unavailable: unavailableBlocks
+                        unavailable: unavailableBlocks,
+                        debug: {
+                            workingId: workingId
+                        }
                     };
                 } catch (error) {
                     console.error(`Error fetching availability for ${car.name}:`, error);
