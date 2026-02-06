@@ -1,174 +1,285 @@
-// /api/availability.js
+/**
+ * Bubblegum Cars Availability API
+ * Vercel Serverless Function
+ * 
+ * Fetches car availability from Booqable API v1 and returns structured data
+ * for the next 4 days in Brisbane timezone.
+ */
 
-const BOOQABLE_API = "https://api.booqable.com/v1";
-const COMPANY_SLUG = "bubblegum-cars";
-const TZ = "Australia/Brisbane";
-const RE_RENT_BUFFER_MINUTES = 15;
-
-// Convert Date → YYYY-MM-DD (Brisbane)
-function toBrisbaneDateString(date) {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(date);
+// Helper: Format date as DD-MM-YYYY for Booqable API
+function formatDateForAPI(date) {
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const year = date.getFullYear();
+    return `${day}-${month}-${year}`;
 }
 
-// Start of day (midnight Brisbane)
-function startOfBrisbaneDay(date) {
-  const d = new Date(
-    new Intl.DateTimeFormat("en-CA", {
-      timeZone: TZ,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(date)
-  );
-  return d;
+// Helper: Get Brisbane midnight for a given date
+function getBrisbaneMidnight(offsetDays = 0) {
+    const now = new Date();
+    
+    // Get current time in Brisbane
+    const brisbaneTime = new Date(now.toLocaleString('en-US', { timeZone: 'Australia/Brisbane' }));
+    
+    // Set to midnight
+    brisbaneTime.setHours(0, 0, 0, 0);
+    
+    // Add offset days
+    brisbaneTime.setDate(brisbaneTime.getDate() + offsetDays);
+    
+    // Convert back to UTC for API consistency
+    const utcTime = new Date(brisbaneTime.toISOString());
+    
+    return utcTime;
 }
 
-// Add minutes to date
-function addMinutes(date, minutes) {
-  return new Date(date.getTime() + minutes * 60000);
+// Helper: Filter to only rental cars (exclude accessories and add-ons)
+function isRentalCar(product) {
+    const name = (product.name || '').trim().toLowerCase();
+    
+    // Must be a rental product
+    if (product.product_type !== 'rental') return false;
+    
+    // Must be trackable
+    if (!product.trackable && product.tracking_type !== 'trackable') return false;
+    
+    // Must be shown in store
+    if (!product.show_in_store) return false;
+    
+    // Exclude accessories and add-ons by name
+    const excludeKeywords = [
+        'add on',
+        'add-on',
+        'addon',
+        'excess',
+        'speaker',
+        'camera',
+        'insurance',
+        'roadside',
+        'gps',
+        'child seat',
+        'booster',
+        'delivery',
+        'collection'
+    ];
+    
+    for (const keyword of excludeKeywords) {
+        if (name.includes(keyword)) return false;
+    }
+    
+    // Optional: Cars typically have higher daily rates (>= $100)
+    // This helps filter out cheap accessories
+    if (product.base_price_in_cents && product.base_price_in_cents < 10000) {
+        return false;
+    }
+    
+    return true;
+}
+
+// Helper: Parse Booqable availability data into unavailable blocks
+function parseAvailability(availabilityData, startDate, endDate) {
+    if (!availabilityData || !availabilityData.data) {
+        return [];
+    }
+
+    const unavailableBlocks = [];
+    let currentBlock = null;
+
+    // Booqable returns minute-by-minute availability
+    // We need to find continuous blocks where available <= 0
+    const minutes = Object.entries(availabilityData.data).sort((a, b) => {
+        return new Date(a[0]) - new Date(b[0]);
+    });
+
+    for (const [timestamp, count] of minutes) {
+        const time = new Date(timestamp);
+        const isUnavailable = count <= 0;
+
+        if (isUnavailable) {
+            if (!currentBlock) {
+                // Start new unavailable block
+                currentBlock = {
+                    start: new Date(time),
+                    end: new Date(time)
+                };
+            } else {
+                // Extend current block
+                currentBlock.end = new Date(time);
+            }
+        } else {
+            if (currentBlock) {
+                // End of unavailable block - add 15 minute buffer
+                const endWithBuffer = new Date(currentBlock.end);
+                endWithBuffer.setMinutes(endWithBuffer.getMinutes() + 15);
+                
+                unavailableBlocks.push({
+                    start: currentBlock.start.toISOString(),
+                    end: endWithBuffer.toISOString()
+                });
+                
+                currentBlock = null;
+            }
+        }
+    }
+
+    // Close any remaining block
+    if (currentBlock) {
+        const endWithBuffer = new Date(currentBlock.end);
+        endWithBuffer.setMinutes(endWithBuffer.getMinutes() + 15);
+        
+        unavailableBlocks.push({
+            start: currentBlock.start.toISOString(),
+            end: endWithBuffer.toISOString()
+        });
+    }
+
+    return unavailableBlocks;
 }
 
 export default async function handler(req, res) {
-  try {
-    const days = Number(req.query.days || 4);
-    const token = process.env.BOOQABLE_API_KEY;
+    // CORS headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-    if (!token) {
-      return res.status(500).json({ error: "Missing BOOQABLE_API_KEY" });
+    if (req.method === 'OPTIONS') {
+        return res.status(200).end();
     }
 
-    // Window calculation
-    const now = new Date();
-    const windowStart = startOfBrisbaneDay(now);
-    const windowEnd = addMinutes(
-      startOfBrisbaneDay(addMinutes(now, days * 1440)),
-      0
-    );
+    if (req.method !== 'GET') {
+        return res.status(405).json({ error: 'Method not allowed' });
+    }
 
-    const from = toBrisbaneDateString(windowStart).split("-").reverse().join("-");
-    const till = toBrisbaneDateString(windowEnd).split("-").reverse().join("-");
+    // Booqable API credentials from environment variables
+    const BOOQABLE_COMPANY = process.env.BOOQABLE_COMPANY;
+    const BOOQABLE_API_KEY = process.env.BOOQABLE_API_KEY;
 
-    // 1️⃣ Fetch all products
-    const productsRes = await fetch(
-      `${BOOQABLE_API}/products?per_page=100`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Booqable-Company": COMPANY_SLUG,
-        },
-      }
-    );
-
-    const productsData = await productsRes.json();
-
-    // 2️⃣ Filter to ONLY cars
-    const cars = productsData.products.filter((p) => {
-      if (p.archived) return false;
-      if (p.product_type !== "rental") return false;
-      if (!p.trackable) return false;
-      if (!p.show_in_store) return false;
-
-      const name = (p.name || "").toLowerCase();
-
-      // Explicit exclusions
-      if (name.includes("excess")) return false;
-      if (name.includes("add on")) return false;
-      if (name.includes("speaker")) return false;
-      if (name.includes("camera")) return false;
-      if (name.includes("cable")) return false;
-
-      return true;
-    });
-
-    // 3️⃣ Fetch availability per car
-    const results = [];
-
-    for (const car of cars) {
-      const availabilityRes = await fetch(
-        `${BOOQABLE_API}/products/${car.id}/availability?interval=minute&from=${from}&till=${till}`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Booqable-Company": COMPANY_SLUG,
-          },
-        }
-      );
-
-      const availabilityData = await availabilityRes.json();
-      const unavailable = [];
-
-      let currentBlock = null;
-
-      for (const slot of availabilityData.availability || []) {
-        const slotTime = new Date(slot.from);
-        const isAvailable = slot.available_quantity > 0;
-
-        if (!isAvailable) {
-          if (!currentBlock) {
-            currentBlock = {
-              from: slotTime,
-              till: slotTime,
-            };
-          } else {
-            currentBlock.till = slotTime;
-          }
-        } else if (currentBlock) {
-          // Apply re-rent buffer
-          currentBlock.till = addMinutes(
-            currentBlock.till,
-            RE_RENT_BUFFER_MINUTES
-          );
-
-          unavailable.push({
-            from: currentBlock.from,
-            till: currentBlock.till,
-          });
-
-          currentBlock = null;
-        }
-      }
-
-      if (currentBlock) {
-        currentBlock.till = addMinutes(
-          currentBlock.till,
-          RE_RENT_BUFFER_MINUTES
-        );
-        unavailable.push({
-          from: currentBlock.from,
-          till: currentBlock.till,
+    if (!BOOQABLE_COMPANY || !BOOQABLE_API_KEY) {
+        return res.status(500).json({ 
+            error: 'Missing Booqable API configuration',
+            message: 'Please set BOOQABLE_COMPANY and BOOQABLE_API_KEY environment variables'
         });
-      }
-
-      results.push({
-        id: car.id,
-        name: car.name.trim(),
-        unavailable,
-      });
     }
 
-    res.status(200).json({
-      now,
-      tz: TZ,
-      window: {
-        start: windowStart,
-        end: windowEnd,
-        days,
-      },
-      cars: results,
-      debug: {
-        total_products: productsData.products.length,
-        cars_found: results.length,
-        from_ddmmyyyy: from,
-        till_ddmmyyyy: till,
-      },
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error", details: String(err) });
-  }
+    const baseURL = `https://${BOOQABLE_COMPANY}.booqable.com/api/1`;
+
+    try {
+        // Step 1: Calculate date window (Today + next 3 days = 4 days total)
+        const startDate = getBrisbaneMidnight(0); // Today midnight Brisbane
+        const endDate = getBrisbaneMidnight(4);   // +4 days midnight Brisbane
+        
+        const fromDate = formatDateForAPI(startDate);
+        const tillDate = formatDateForAPI(endDate);
+
+        // Generate array of day start times for frontend
+        const days = [];
+        for (let i = 0; i < 4; i++) {
+            days.push(getBrisbaneMidnight(i).toISOString());
+        }
+
+        // Step 2: Fetch all products from Booqable
+        const productsResponse = await fetch(`${baseURL}/products`, {
+            headers: {
+                'Authorization': `Bearer ${BOOQABLE_API_KEY}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (!productsResponse.ok) {
+            throw new Error(`Booqable products API error: ${productsResponse.status}`);
+        }
+
+        const productsData = await productsResponse.json();
+        
+        // Step 3: Filter to rental cars only
+        const allProducts = productsData.data || productsData.products || [];
+        const cars = allProducts.filter(isRentalCar);
+
+        if (cars.length === 0) {
+            return res.status(200).json({
+                tz: 'Australia/Brisbane',
+                window: {
+                    start: startDate.toISOString(),
+                    end: endDate.toISOString(),
+                    days: 4
+                },
+                days: days,
+                cars: [],
+                debug: {
+                    totalProducts: allProducts.length,
+                    message: 'No cars found after filtering. Check product configuration.'
+                }
+            });
+        }
+
+        // Step 4: Fetch availability for each car
+        const carsWithAvailability = await Promise.all(
+            cars.map(async (car) => {
+                try {
+                    // IMPORTANT: Use product_group_id if available, otherwise fall back to id
+                    // Booqable sometimes requires the group ID for availability endpoint
+                    const productId = car.product_group_id || car.id;
+                    
+                    const availabilityURL = `${baseURL}/products/${productId}/availability?interval=minute&from=${fromDate}&till=${tillDate}`;
+                    
+                    const availabilityResponse = await fetch(availabilityURL, {
+                        headers: {
+                            'Authorization': `Bearer ${BOOQABLE_API_KEY}`,
+                            'Content-Type': 'application/json'
+                        }
+                    });
+
+                    if (!availabilityResponse.ok) {
+                        console.error(`Availability fetch failed for ${car.name}:`, availabilityResponse.status);
+                        return {
+                            name: car.name.trim(),
+                            unavailable: [],
+                            error: `API error: ${availabilityResponse.status}`
+                        };
+                    }
+
+                    const availabilityData = await availabilityResponse.json();
+                    const unavailableBlocks = parseAvailability(availabilityData, startDate, endDate);
+
+                    return {
+                        name: car.name.trim(),
+                        unavailable: unavailableBlocks
+                    };
+                } catch (error) {
+                    console.error(`Error fetching availability for ${car.name}:`, error);
+                    return {
+                        name: car.name.trim(),
+                        unavailable: [],
+                        error: error.message
+                    };
+                }
+            })
+        );
+
+        // Step 5: Return structured response
+        return res.status(200).json({
+            tz: 'Australia/Brisbane',
+            window: {
+                start: startDate.toISOString(),
+                end: endDate.toISOString(),
+                days: 4,
+                from: fromDate,
+                till: tillDate
+            },
+            days: days,
+            cars: carsWithAvailability,
+            metadata: {
+                totalCars: carsWithAvailability.length,
+                fetchedAt: new Date().toISOString()
+            }
+        });
+
+    } catch (error) {
+        console.error('API Handler Error:', error);
+        return res.status(500).json({
+            error: 'Internal server error',
+            message: error.message,
+            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+    }
 }
