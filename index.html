@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Bubblegum Cars – Staff Availability</title>
+  <title>Bubblegum Cars — Staff Availability</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <style>
@@ -27,7 +27,7 @@
 
     button {
       padding: 8px 12px;
-      border-radius: 6px;
+      border-radius: 999px;
       border: 1px solid #ccc;
       background: #f5f5f5;
       cursor: pointer;
@@ -41,86 +41,66 @@
     }
 
     .car {
-      border: 1px solid #e0e0e0;
-      border-radius: 10px;
-      padding: 12px;
-      margin-bottom: 12px;
+      border-bottom: 1px solid #eee;
+      padding: 12px 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
     }
 
     .car-name {
       font-weight: 600;
-      margin-bottom: 6px;
     }
 
     .status {
       font-size: 14px;
+      font-weight: 600;
     }
 
     .available {
       color: #1b7f3c;
-      font-weight: 600;
     }
 
     .booked {
       color: #b00020;
-      font-weight: 600;
     }
 
-    .returning {
+    .upcoming {
       color: #b36b00;
-      font-weight: 600;
-    }
-
-    .error {
-      color: #b00020;
-      font-weight: 600;
-      margin-top: 16px;
-    }
-
-    .loading {
-      opacity: 0.7;
     }
   </style>
 </head>
 
 <body>
-  <h1>Bubblegum Cars</h1>
-  <div>Staff availability</div>
+  <h1>Bubblegum Cars — Staff Availability</h1>
+  <div>Today + next 3 days (Brisbane time)</div>
 
   <div class="days" id="dayButtons"></div>
-
-  <div id="cars" class="loading">Loading…</div>
-
-  <div id="error" class="error"></div>
+  <div id="cars">Loading…</div>
 
   <script>
     const TZ = "Australia/Brisbane";
-    const DAYS_TO_SHOW = 4;
+    const DAYS = 4;
 
-    let apiData = null;
-    let selectedDayIndex = 0;
+    let apiData;
+    let selectedDay = 0;
 
-    function brisbaneDayStart(date) {
-      return new Date(
-        new Intl.DateTimeFormat("en-CA", {
-          timeZone: TZ,
-          year: "numeric",
-          month: "2-digit",
-          day: "2-digit"
-        }).format(date)
-      );
-    }
-
-    function formatTime(date) {
-      return date.toLocaleTimeString("en-AU", {
+    function brisbaneDayStart(offsetDays = 0) {
+      const now = new Date();
+      const dateStr = new Intl.DateTimeFormat("en-CA", {
         timeZone: TZ,
-        hour: "numeric",
-        minute: "2-digit"
-      });
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+      }).format(now);
+
+      const d = new Date(dateStr);
+      d.setDate(d.getDate() + offsetDays);
+      return d;
     }
 
-    function formatDayLabel(date) {
-      return date.toLocaleDateString("en-AU", {
+    function formatDay(d) {
+      return d.toLocaleDateString("en-AU", {
         timeZone: TZ,
         weekday: "short",
         day: "numeric",
@@ -128,51 +108,49 @@
       });
     }
 
-    function buildDayButtons() {
-      const container = document.getElementById("dayButtons");
-      container.innerHTML = "";
+    function formatTime(d) {
+      return d.toLocaleTimeString("en-AU", {
+        timeZone: TZ,
+        hour: "numeric",
+        minute: "2-digit"
+      });
+    }
 
-      for (let i = 0; i < DAYS_TO_SHOW; i++) {
-        const d = new Date();
-        d.setDate(d.getDate() + i);
+    function buildButtons() {
+      const el = document.getElementById("dayButtons");
+      el.innerHTML = "";
 
+      for (let i = 0; i < DAYS; i++) {
+        const d = brisbaneDayStart(i);
         const btn = document.createElement("button");
-        btn.textContent = formatDayLabel(d);
-        if (i === selectedDayIndex) btn.classList.add("active");
+        btn.textContent = formatDay(d);
+        if (i === selectedDay) btn.classList.add("active");
 
         btn.onclick = () => {
-          selectedDayIndex = i;
-          buildDayButtons();
-          renderCars();
+          selectedDay = i;
+          buildButtons();
+          render();
         };
 
-        container.appendChild(btn);
+        el.appendChild(btn);
       }
     }
 
-    function renderCars() {
+    function render() {
       const container = document.getElementById("cars");
-      container.classList.remove("loading");
       container.innerHTML = "";
 
-      if (!apiData || !apiData.cars) {
-        container.innerHTML = "No data.";
-        return;
-      }
-
-      const dayStart = brisbaneDayStart(new Date());
-      dayStart.setDate(dayStart.getDate() + selectedDayIndex);
+      const dayStart = brisbaneDayStart(selectedDay);
       const dayEnd = new Date(dayStart);
       dayEnd.setDate(dayEnd.getDate() + 1);
 
       apiData.cars.forEach(car => {
-        const div = document.createElement("div");
-        div.className = "car";
+        const row = document.createElement("div");
+        row.className = "car";
 
         const name = document.createElement("div");
         name.className = "car-name";
         name.textContent = car.name;
-        div.appendChild(name);
 
         const status = document.createElement("div");
         status.className = "status";
@@ -183,41 +161,35 @@
           new Date(b.from) < dayEnd && new Date(b.till) > dayStart
         );
 
-        if (!overlapping) {
-          const next = blocks.find(b => new Date(b.from) > dayEnd);
-
-          if (next && (new Date(next.from) - new Date()) < 24 * 60 * 60 * 1000) {
-            status.innerHTML =
-              `<span class="returning">Available – returns at ${formatTime(new Date(next.from))}</span>`;
-          } else {
-            status.innerHTML =
-              `<span class="available">Available</span>`;
-          }
+        if (overlapping) {
+          status.textContent = `Booked — returns ${formatTime(new Date(overlapping.till))}`;
+          status.classList.add("booked");
         } else {
-          status.innerHTML =
-            `<span class="booked">Booked until ${formatTime(new Date(overlapping.till))}</span>`;
+          const upcoming = blocks.find(b => new Date(b.from) > dayStart);
+
+          if (upcoming && (new Date(upcoming.from) - new Date()) < 24 * 60 * 60 * 1000) {
+            status.textContent = `Available — returns ${formatTime(new Date(upcoming.from))}`;
+            status.classList.add("upcoming");
+          } else {
+            status.textContent = "Available";
+            status.classList.add("available");
+          }
         }
 
-        div.appendChild(status);
-        container.appendChild(div);
+        row.appendChild(name);
+        row.appendChild(status);
+        container.appendChild(row);
       });
     }
 
-    async function loadData() {
-      try {
-        const res = await fetch("/api/availability?days=4");
-        if (!res.ok) throw new Error("API error");
-
-        apiData = await res.json();
-        buildDayButtons();
-        renderCars();
-      } catch (e) {
-        document.getElementById("error").textContent =
-          "Could not load availability.";
-      }
+    async function load() {
+      const res = await fetch("/api/availability?days=4");
+      apiData = await res.json();
+      buildButtons();
+      render();
     }
 
-    loadData();
+    load();
   </script>
 </body>
 </html>
