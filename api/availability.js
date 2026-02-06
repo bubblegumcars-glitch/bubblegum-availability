@@ -228,21 +228,30 @@ export default async function handler(req, res) {
         const carsWithAvailability = await Promise.all(
             cars.map(async (car) => {
                 try {
-                    // IMPORTANT: Try multiple ID fields to find what works
-                    // Booqable can use different ID fields depending on setup
-                    const possibleIds = [
+                    // Hardcoded IDs for Bean and Blossom (temporary fix)
+                    const carName = car.name.trim();
+                    const hardcodedIds = {
+                        'Bean': '479afc49-6399-4395-add3-ccc9b9902f76',
+                        'Blossom': '7cea0ef0-8d27-4208-b997-c8b32e3d1fb3'
+                    };
+                    
+                    // Build list of IDs to try
+                    let possibleIds = [];
+                    
+                    // If this car has a hardcoded ID, try that first
+                    if (hardcodedIds[carName]) {
+                        possibleIds.push(hardcodedIds[carName]);
+                    }
+                    
+                    // Then try the IDs from the API
+                    possibleIds = possibleIds.concat([
                         car.product_group_id,
                         car.id,
                         car.item_id,
                         car.slug
-                    ].filter(id => id); // Remove null/undefined values
+                    ].filter(id => id)); // Remove null/undefined values
                     
-                    console.log(`${car.name} - Available IDs:`, {
-                        id: car.id,
-                        product_group_id: car.product_group_id,
-                        item_id: car.item_id,
-                        slug: car.slug
-                    });
+                    console.log(`${carName} - Trying IDs:`, possibleIds);
                     
                     // Try each ID until one works
                     let availabilityData = null;
@@ -251,7 +260,7 @@ export default async function handler(req, res) {
                     for (const productId of possibleIds) {
                         const availabilityURL = `${baseURL}/products/${productId}/availability?interval=minute&from=${fromDate}&till=${tillDate}`;
                         
-                        console.log(`Trying ${car.name} with ID: ${productId}`);
+                        console.log(`Trying ${carName} with ID: ${productId}`);
                         
                         const availabilityResponse = await fetch(availabilityURL, {
                             headers: {
@@ -263,22 +272,18 @@ export default async function handler(req, res) {
                         if (availabilityResponse.ok) {
                             availabilityData = await availabilityResponse.json();
                             workingId = productId;
-                            console.log(`SUCCESS: ${car.name} works with ID: ${productId}`);
+                            console.log(`SUCCESS: ${carName} works with ID: ${productId}`);
                             break;
                         } else {
-                            console.log(`FAILED: ${car.name} with ID ${productId} returned ${availabilityResponse.status}`);
+                            console.log(`FAILED: ${carName} with ID ${productId} returned ${availabilityResponse.status}`);
                         }
                     }
 
                     if (!availabilityData) {
-                        console.error(`All IDs failed for ${car.name}`);
+                        console.error(`All IDs failed for ${carName}`);
                         return {
-                            name: car.name.trim(),
+                            name: carName,
                             unavailable: [],
-                            debug: {
-                                triedIds: possibleIds,
-                                allFailed: true
-                            },
                             error: 'All ID attempts failed'
                         };
                     }
@@ -286,11 +291,8 @@ export default async function handler(req, res) {
                     const unavailableBlocks = parseAvailability(availabilityData, startDate, endDate);
 
                     return {
-                        name: car.name.trim(),
-                        unavailable: unavailableBlocks,
-                        debug: {
-                            workingId: workingId
-                        }
+                        name: carName,
+                        unavailable: unavailableBlocks
                     };
                 } catch (error) {
                     console.error(`Error fetching availability for ${car.name}:`, error);
