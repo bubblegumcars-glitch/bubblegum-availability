@@ -9,9 +9,5 @@
       "src": "/(.*)",
       "dest": "/index.html"
     }
-  ],
-  "env": {
-    "BOOQABLE_COMPANY": "@booqable-company",
-    "BOOQABLE_API_KEY": "@booqable-api-key"
-  }
+  ]
 }
