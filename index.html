@@ -2,222 +2,222 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Bubblegum Cars — Staff Availability</title>
+  <title>Bubblegum Cars – Staff Availability</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <style>
     body {
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #fafafa;
-      margin: 0;
-      padding: 24px;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #fff;
       color: #111;
+      margin: 0;
+      padding: 16px;
     }
 
     h1 {
-      font-size: 34px;
-      margin-bottom: 6px;
+      margin-bottom: 4px;
     }
 
-    .subtitle {
-      color: #555;
-      margin-bottom: 16px;
-    }
-
-    .controls, .tabs {
+    .days {
       display: flex;
       gap: 8px;
+      margin: 16px 0;
       flex-wrap: wrap;
-      margin-bottom: 16px;
     }
 
-    .pill, .tab {
-      padding: 8px 14px;
-      border-radius: 999px;
-      background: #f0f0f0;
-      border: 1px solid #ddd;
-      font-size: 14px;
+    button {
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+      background: #f5f5f5;
       cursor: pointer;
+      font-size: 14px;
     }
 
-    .tab.active {
+    button.active {
       background: #000;
       color: #fff;
       border-color: #000;
     }
 
-    .card {
-      background: #fff;
-      border-radius: 14px;
-      padding: 18px;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+    .car {
+      border: 1px solid #e0e0e0;
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 12px;
     }
 
-    table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-
-    th, td {
-      padding: 12px 8px;
-      border-bottom: 1px solid #eee;
-    }
-
-    th {
-      font-size: 14px;
-      color: #666;
-      text-align: left;
+    .car-name {
+      font-weight: 600;
+      margin-bottom: 6px;
     }
 
     .status {
-      font-weight: 700;
+      font-size: 14px;
     }
 
     .available {
-      color: #1a7f37;
+      color: #1b7f3c;
+      font-weight: 600;
     }
 
     .booked {
-      color: #b42318;
+      color: #b00020;
+      font-weight: 600;
     }
 
-    .note {
-      font-size: 13px;
-      color: #666;
+    .returning {
+      color: #b36b00;
+      font-weight: 600;
+    }
+
+    .error {
+      color: #b00020;
+      font-weight: 600;
+      margin-top: 16px;
+    }
+
+    .loading {
+      opacity: 0.7;
     }
   </style>
 </head>
+
 <body>
+  <h1>Bubblegum Cars</h1>
+  <div>Staff availability</div>
 
-<h1>Bubblegum Cars — Staff Availability</h1>
-<div class="subtitle">
-  Shows <strong>Today + next 3 days</strong> in Brisbane time.
-  Day = midnight-to-midnight.
-  Anyone with the link can view.
-</div>
+  <div class="days" id="dayButtons"></div>
 
-<div class="controls">
-  <button class="pill" onclick="loadDays()">Refresh</button>
-  <div class="pill">Timezone: Australia/Brisbane</div>
-  <div class="pill">Range: 4 days</div>
-  <div class="pill">View: Available / Booked</div>
-</div>
+  <div id="cars" class="loading">Loading…</div>
 
-<div class="tabs" id="tabs"></div>
+  <div id="error" class="error"></div>
 
-<div class="card">
-  <h2 id="dayTitle"></h2>
+  <script>
+    const TZ = "Australia/Brisbane";
+    const DAYS_TO_SHOW = 4;
 
-  <table>
-    <thead>
-      <tr>
-        <th>Car</th>
-        <th>Status</th>
-      </tr>
-    </thead>
-    <tbody id="tableBody"></tbody>
-  </table>
+    let apiData = null;
+    let selectedDayIndex = 0;
 
-  <div class="note">
-    Availability matches the public Bubblegum Cars booking site.
-  </div>
-</div>
+    function brisbaneDayStart(date) {
+      return new Date(
+        new Intl.DateTimeFormat("en-CA", {
+          timeZone: TZ,
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit"
+        }).format(date)
+      );
+    }
 
-<script>
-let DAYS = [];
-let ACTIVE_DATE = null;
-
-function toDDMMYYYY(isoDate) {
-  const [y, m, d] = isoDate.split("-");
-  return `${d}-${m}-${y}`;
-}
-
-function loadDays() {
-  const now = new Date(
-    new Date().toLocaleString("en-US", { timeZone: "Australia/Brisbane" })
-  );
-
-  DAYS = [];
-  for (let i = 0; i < 4; i++) {
-    const d = new Date(now);
-    d.setDate(now.getDate() + i);
-
-    const iso = d.toISOString().slice(0, 10);
-    const label = d.toLocaleDateString("en-AU", {
-      weekday: "short",
-      day: "2-digit",
-      month: "short"
-    });
-
-    DAYS.push({ iso, label });
-  }
-
-  buildTabs();
-  setActiveDay(DAYS[0].iso);
-}
-
-function buildTabs() {
-  const tabs = document.getElementById("tabs");
-  tabs.innerHTML = "";
-
-  DAYS.forEach(d => {
-    const btn = document.createElement("button");
-    btn.className = "tab";
-    btn.textContent = `${d.label} (${d.iso})`;
-    btn.onclick = () => setActiveDay(d.iso);
-    btn.dataset.date = d.iso;
-    tabs.appendChild(btn);
-  });
-}
-
-function setActiveDay(isoDate) {
-  ACTIVE_DATE = isoDate;
-
-  document.querySelectorAll(".tab").forEach(t =>
-    t.classList.toggle("active", t.dataset.date === isoDate)
-  );
-
-  document.getElementById("dayTitle").textContent =
-    `${isoDate}`;
-
-  loadAvailability();
-}
-
-function loadAvailability() {
-  const from = toDDMMYYYY(ACTIVE_DATE);
-  const till = from;
-
-  fetch(`/api/availability?from=${from}&till=${till}`)
-    .then(r => r.json())
-    .then(data => {
-      const tbody = document.getElementById("tableBody");
-      tbody.innerHTML = "";
-
-      data.cars.forEach(car => {
-        const tr = document.createElement("tr");
-
-        const nameTd = document.createElement("td");
-        nameTd.textContent = car.name;
-
-        const statusTd = document.createElement("td");
-        const status = car.status;
-        statusTd.textContent = status;
-        statusTd.className =
-          "status " + (status === "Available" ? "available" : "booked");
-
-        tr.appendChild(nameTd);
-        tr.appendChild(statusTd);
-        tbody.appendChild(tr);
+    function formatTime(date) {
+      return date.toLocaleTimeString("en-AU", {
+        timeZone: TZ,
+        hour: "numeric",
+        minute: "2-digit"
       });
-    })
-    .catch(err => {
-      console.error(err);
-      alert("Failed to load availability");
-    });
-}
+    }
 
-loadDays();
-</script>
+    function formatDayLabel(date) {
+      return date.toLocaleDateString("en-AU", {
+        timeZone: TZ,
+        weekday: "short",
+        day: "numeric",
+        month: "short"
+      });
+    }
 
+    function buildDayButtons() {
+      const container = document.getElementById("dayButtons");
+      container.innerHTML = "";
+
+      for (let i = 0; i < DAYS_TO_SHOW; i++) {
+        const d = new Date();
+        d.setDate(d.getDate() + i);
+
+        const btn = document.createElement("button");
+        btn.textContent = formatDayLabel(d);
+        if (i === selectedDayIndex) btn.classList.add("active");
+
+        btn.onclick = () => {
+          selectedDayIndex = i;
+          buildDayButtons();
+          renderCars();
+        };
+
+        container.appendChild(btn);
+      }
+    }
+
+    function renderCars() {
+      const container = document.getElementById("cars");
+      container.classList.remove("loading");
+      container.innerHTML = "";
+
+      if (!apiData || !apiData.cars) {
+        container.innerHTML = "No data.";
+        return;
+      }
+
+      const dayStart = brisbaneDayStart(new Date());
+      dayStart.setDate(dayStart.getDate() + selectedDayIndex);
+      const dayEnd = new Date(dayStart);
+      dayEnd.setDate(dayEnd.getDate() + 1);
+
+      apiData.cars.forEach(car => {
+        const div = document.createElement("div");
+        div.className = "car";
+
+        const name = document.createElement("div");
+        name.className = "car-name";
+        name.textContent = car.name;
+        div.appendChild(name);
+
+        const status = document.createElement("div");
+        status.className = "status";
+
+        const blocks = car.unavailable || [];
+
+        const overlapping = blocks.find(b =>
+          new Date(b.from) < dayEnd && new Date(b.till) > dayStart
+        );
+
+        if (!overlapping) {
+          const next = blocks.find(b => new Date(b.from) > dayEnd);
+
+          if (next && (new Date(next.from) - new Date()) < 24 * 60 * 60 * 1000) {
+            status.innerHTML =
+              `<span class="returning">Available – returns at ${formatTime(new Date(next.from))}</span>`;
+          } else {
+            status.innerHTML =
+              `<span class="available">Available</span>`;
+          }
+        } else {
+          status.innerHTML =
+            `<span class="booked">Booked until ${formatTime(new Date(overlapping.till))}</span>`;
+        }
+
+        div.appendChild(status);
+        container.appendChild(div);
+      });
+    }
+
+    async function loadData() {
+      try {
+        const res = await fetch("/api/availability?days=4");
+        if (!res.ok) throw new Error("API error");
+
+        apiData = await res.json();
+        buildDayButtons();
+        renderCars();
+      } catch (e) {
+        document.getElementById("error").textContent =
+          "Could not load availability.";
+      }
+    }
+
+    loadData();
+  </script>
 </body>
 </html>
