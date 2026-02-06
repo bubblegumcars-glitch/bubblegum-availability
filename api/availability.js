@@ -2,17 +2,11 @@
  * Bubblegum Cars Availability API
  * Vercel Serverless Function
  * 
- * Fetches car availability from Booqable API v1 and returns structured data
+ * Fetches car availability from Booqable API v3 (shop API) and returns structured data
  * for the next 4 days in Brisbane timezone.
+ * 
+ * Uses the same API endpoint as the customer booking website for accurate availability.
  */
-
-// Helper: Format date as DD-MM-YYYY for Booqable API
-function formatDateForAPI(date) {
-    const day = String(date.getDate()).padStart(2, '0');
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const year = date.getFullYear();
-    return `${day}-${month}-${year}`;
-}
 
 // Helper: Get Brisbane midnight for a given date
 function getBrisbaneMidnight(offsetDays = 0) {
@@ -76,66 +70,6 @@ function isRentalCar(product) {
     return true;
 }
 
-// Helper: Parse Booqable availability data into unavailable blocks
-function parseAvailability(availabilityData, startDate, endDate) {
-    if (!availabilityData || !availabilityData.data) {
-        return [];
-    }
-
-    const unavailableBlocks = [];
-    let currentBlock = null;
-
-    // Booqable returns minute-by-minute availability
-    // We need to find continuous blocks where available <= 0
-    const minutes = Object.entries(availabilityData.data).sort((a, b) => {
-        return new Date(a[0]) - new Date(b[0]);
-    });
-
-    for (const [timestamp, count] of minutes) {
-        const time = new Date(timestamp);
-        const isUnavailable = count <= 0;
-
-        if (isUnavailable) {
-            if (!currentBlock) {
-                // Start new unavailable block
-                currentBlock = {
-                    start: new Date(time),
-                    end: new Date(time)
-                };
-            } else {
-                // Extend current block
-                currentBlock.end = new Date(time);
-            }
-        } else {
-            if (currentBlock) {
-                // End of unavailable block - add 15 minute buffer
-                const endWithBuffer = new Date(currentBlock.end);
-                endWithBuffer.setMinutes(endWithBuffer.getMinutes() + 15);
-                
-                unavailableBlocks.push({
-                    start: currentBlock.start.toISOString(),
-                    end: endWithBuffer.toISOString()
-                });
-                
-                currentBlock = null;
-            }
-        }
-    }
-
-    // Close any remaining block
-    if (currentBlock) {
-        const endWithBuffer = new Date(currentBlock.end);
-        endWithBuffer.setMinutes(endWithBuffer.getMinutes() + 15);
-        
-        unavailableBlocks.push({
-            start: currentBlock.start.toISOString(),
-            end: endWithBuffer.toISOString()
-        });
-    }
-
-    return unavailableBlocks;
-}
-
 export default async function handler(req, res) {
     // CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -161,15 +95,14 @@ export default async function handler(req, res) {
         });
     }
 
-    const baseURL = `https://${BOOQABLE_COMPANY}.booqable.com/api/1`;
+    // Use the shop API (v3) - same as the booking website
+    const shopURL = `https://${BOOQABLE_COMPANY}.booqableshop.com/api/3`;
+    const apiURL = `https://${BOOQABLE_COMPANY}.booqable.com/api/1`;
 
     try {
         // Step 1: Calculate date window (Today + next 3 days = 4 days total)
         const startDate = getBrisbaneMidnight(0); // Today midnight Brisbane
         const endDate = getBrisbaneMidnight(4);   // +4 days midnight Brisbane
-        
-        const fromDate = formatDateForAPI(startDate);
-        const tillDate = formatDateForAPI(endDate);
 
         // Generate array of day start times for frontend
         const days = [];
@@ -177,8 +110,8 @@ export default async function handler(req, res) {
             days.push(getBrisbaneMidnight(i).toISOString());
         }
 
-        // Step 2: Fetch all products from Booqable
-        const productsResponse = await fetch(`${baseURL}/products`, {
+        // Step 2: Fetch all products from Booqable API v1
+        const productsResponse = await fetch(`${apiURL}/products`, {
             headers: {
                 'Authorization': `Bearer ${BOOQABLE_API_KEY}`,
                 'Content-Type': 'application/json'
@@ -193,19 +126,7 @@ export default async function handler(req, res) {
         
         // Step 3: Filter to rental cars only
         const allProducts = productsData.data || productsData.products || [];
-        
-        // Debug: Log first product structure
-        if (allProducts.length > 0) {
-            console.log('Sample product structure:', JSON.stringify(allProducts[0], null, 2));
-        }
-        
         const cars = allProducts.filter(isRentalCar);
-        
-        // Debug: Log filtered cars with their IDs
-        console.log(`Filtered ${cars.length} cars from ${allProducts.length} products`);
-        cars.forEach(car => {
-            console.log(`Car: ${car.name}, id: ${car.id}, product_group_id: ${car.product_group_id}`);
-        });
 
         if (cars.length === 0) {
             return res.status(200).json({
@@ -216,83 +137,97 @@ export default async function handler(req, res) {
                     days: 4
                 },
                 days: days,
-                cars: [],
-                debug: {
-                    totalProducts: allProducts.length,
-                    message: 'No cars found after filtering. Check product configuration.'
-                }
+                cars: []
             });
         }
 
-        // Step 4: Fetch availability for each car
+        // Hardcoded item IDs (from the working product group IDs we found)
+        const itemIdMap = {
+            'Bean': '479afc49-6399-4395-add3-ccc9b9902f76',
+            'Blossom': '7cea0ef0-8d27-4208-b997-c8b32e3d1fb3',
+            'Betsy': 'd70ea3db-7973-451c-af33-c30e307720ef',
+            'Breezy': '75cee8f1-9b60-484c-820e-380dd607c3f3',
+            'Bubbles': 'c03a9629-816c-4010-bcf7-08e7780f5d4e'
+        };
+
+        // Step 4: Fetch availability for each car using API v3
         const carsWithAvailability = await Promise.all(
             cars.map(async (car) => {
                 try {
-                    // Hardcoded IDs for Bean and Blossom (temporary fix)
                     const carName = car.name.trim();
-                    const hardcodedIds = {
-                        'Bean': '479afc49-6399-4395-add3-ccc9b9902f76',
-                        'Blossom': '7cea0ef0-8d27-4208-b997-c8b32e3d1fb3'
-                    };
-                    
-                    // Build list of IDs to try
-                    let possibleIds = [];
-                    
-                    // If this car has a hardcoded ID, try that first
-                    if (hardcodedIds[carName]) {
-                        possibleIds.push(hardcodedIds[carName]);
-                    }
-                    
-                    // Then try the IDs from the API
-                    possibleIds = possibleIds.concat([
-                        car.product_group_id,
-                        car.id,
-                        car.item_id,
-                        car.slug
-                    ].filter(id => id)); // Remove null/undefined values
-                    
-                    console.log(`${carName} - Trying IDs:`, possibleIds);
-                    
-                    // Try each ID until one works
-                    let availabilityData = null;
-                    let workingId = null;
-                    
-                    for (const productId of possibleIds) {
-                        const availabilityURL = `${baseURL}/products/${productId}/availability?interval=minute&from=${fromDate}&till=${tillDate}`;
-                        
-                        console.log(`Trying ${carName} with ID: ${productId}`);
-                        
-                        const availabilityResponse = await fetch(availabilityURL, {
-                            headers: {
-                                'Authorization': `Bearer ${BOOQABLE_API_KEY}`,
-                                'Content-Type': 'application/json'
-                            }
-                        });
+                    const itemId = itemIdMap[carName] || car.product_group_id || car.id;
 
-                        if (availabilityResponse.ok) {
-                            availabilityData = await availabilityResponse.json();
-                            workingId = productId;
-                            console.log(`SUCCESS: ${carName} works with ID: ${productId}`);
-                            break;
-                        } else {
-                            console.log(`FAILED: ${carName} with ID ${productId} returned ${availabilityResponse.status}`);
+                    // Fetch availability for all 4 days
+                    const allUnavailable = [];
+
+                    for (let dayOffset = 0; dayOffset < 4; dayOffset++) {
+                        const dayDate = new Date(startDate);
+                        dayDate.setDate(dayDate.getDate() + dayOffset);
+                        
+                        const year = dayDate.getFullYear();
+                        const month = dayDate.getMonth() + 1;
+                        const day = dayDate.getDate();
+
+                        // Use API v3 item_availabilities endpoint (same as booking site)
+                        const availURL = `${shopURL}/item_availabilities?filter[year]=${year}&filter[month]=${month}&filter[day]=${day}&filter[item_id]=${itemId}&filter[quantity]=1`;
+
+                        const availResponse = await fetch(availURL);
+
+                        if (!availResponse.ok) {
+                            console.error(`API v3 failed for ${carName} on ${year}-${month}-${day}:`, availResponse.status);
+                            continue;
+                        }
+
+                        const availData = await availResponse.json();
+                        const timeSlots = availData.data || [];
+
+                        // Find unavailable blocks
+                        let currentBlock = null;
+
+                        for (const slot of timeSlots) {
+                            const slotDate = slot.attributes.date;
+                            const slotHour = slot.attributes.hour;
+                            const slotMinute = slot.attributes.minute;
+                            const isUnavailable = slot.attributes.status === 'unavailable';
+
+                            if (isUnavailable) {
+                                const slotTime = new Date(`${slotDate}T${slotHour.padStart(2, '0')}:${slotMinute.padStart(2, '0')}:00+10:00`);
+
+                                if (!currentBlock) {
+                                    currentBlock = {
+                                        start: slotTime,
+                                        end: new Date(slotTime.getTime() + 30 * 60 * 1000) // Add 30 min
+                                    };
+                                } else {
+                                    // Extend current block
+                                    currentBlock.end = new Date(slotTime.getTime() + 30 * 60 * 1000);
+                                }
+                            } else {
+                                if (currentBlock) {
+                                    // Add 15 minute buffer to end
+                                    const endWithBuffer = new Date(currentBlock.end.getTime() + 15 * 60 * 1000);
+                                    allUnavailable.push({
+                                        start: currentBlock.start.toISOString(),
+                                        end: endWithBuffer.toISOString()
+                                    });
+                                    currentBlock = null;
+                                }
+                            }
+                        }
+
+                        // Close any remaining block
+                        if (currentBlock) {
+                            const endWithBuffer = new Date(currentBlock.end.getTime() + 15 * 60 * 1000);
+                            allUnavailable.push({
+                                start: currentBlock.start.toISOString(),
+                                end: endWithBuffer.toISOString()
+                            });
                         }
                     }
 
-                    if (!availabilityData) {
-                        console.error(`All IDs failed for ${carName}`);
-                        return {
-                            name: carName,
-                            unavailable: [],
-                            error: 'All ID attempts failed'
-                        };
-                    }
-
-                    const unavailableBlocks = parseAvailability(availabilityData, startDate, endDate);
-
                     return {
                         name: carName,
-                        unavailable: unavailableBlocks
+                        unavailable: allUnavailable
                     };
                 } catch (error) {
                     console.error(`Error fetching availability for ${car.name}:`, error);
@@ -311,9 +246,7 @@ export default async function handler(req, res) {
             window: {
                 start: startDate.toISOString(),
                 end: endDate.toISOString(),
-                days: 4,
-                from: fromDate,
-                till: tillDate
+                days: 4
             },
             days: days,
             cars: carsWithAvailability,
