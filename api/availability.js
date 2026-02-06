@@ -1,410 +1,371 @@
-// Bubblegum Cars — Staff Availability API (Vercel Serverless)
-// BOOKING/TIMES VERSION (Orders-based)
-//
-// What it does:
-// - Finds cars via /products (filters to rental + trackable + show_in_store)
-// - Finds bookings via /orders (starts_at / stops_at + stock_item_ids)
-// - Shows Today + next 3 days in Australia/Brisbane (midnight-to-midnight)
-// - Applies a 15-minute buffer to booking windows for staff re-rent policy
-//
-// Env vars required on Vercel:
-// - BOOQABLE_COMPANY_SLUG   (e.g. "bubblegumcars")
-// - BOOQABLE_API_KEY
-//
-// Optional:
-// - CACHE_TTL_SECONDS (default 30)
+// api/availability.js
+// Bubblegum Cars — Staff Availability (Vercel Serverless)
+// Uses Booqable API v1 minute availability to derive OUT/BACK times.
+// Rules: Brisbane timezone, Today + next 3 days, midnight-to-midnight days, 15-min buffer, cars only.
 
 const TZ = "Australia/Brisbane";
-const DAYS = 4; // Today + next 3
+const DAYS_TO_SHOW = 4; // Today + next 3 days
 const BUFFER_MINUTES = 15;
-const DEFAULT_CACHE_TTL_SECONDS = 30;
 
-// Simple in-memory cache (works per warm lambda)
-const MEMORY_CACHE = { map: new Map() };
-
-function memGet(key) {
-  const hit = MEMORY_CACHE.map.get(key);
-  if (!hit) return null;
-  if (Date.now() > hit.expiresAt) {
-    MEMORY_CACHE.map.delete(key);
-    return null;
-  }
-  return hit.value;
-}
-function memSet(key, value, ttlMs) {
-  MEMORY_CACHE.map.set(key, { value, expiresAt: Date.now() + ttlMs });
-}
-
-function json(res, status, obj, extraHeaders = {}) {
+function json(res, status, obj, headers = {}) {
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
-  // Cache publicly for a short time to reduce Booqable load
-  res.setHeader("Cache-Control", "s-maxage=20, stale-while-revalidate=60");
-  for (const [k, v] of Object.entries(extraHeaders)) res.setHeader(k, v);
+  res.setHeader("Cache-Control", "no-store");
+  // Option A: anyone with link can view (public)
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  for (const [k, v] of Object.entries(headers)) res.setHeader(k, v);
   res.end(JSON.stringify(obj));
-}
-
-function getEnv(name) {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing environment variable: ${name}`);
-  return v;
 }
 
 function pad2(n) {
   return String(n).padStart(2, "0");
 }
 
-// Brisbane is UTC+10 year-round (no DST). We can safely use a fixed offset.
-const BRISBANE_OFFSET_MIN = 10 * 60;
-
-function nowBrisbaneParts() {
-  const nowUtc = new Date();
-  const brisMs = nowUtc.getTime() + BRISBANE_OFFSET_MIN * 60 * 1000;
-  const bris = new Date(brisMs);
-  return { y: bris.getUTCFullYear(), m: bris.getUTCMonth() + 1, d: bris.getUTCDate() };
+// Returns YYYY-MM-DD for Brisbane local date
+function brisbaneYMD(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(date);
+  const y = parts.find(p => p.type === "year").value;
+  const m = parts.find(p => p.type === "month").value;
+  const d = parts.find(p => p.type === "day").value;
+  return `${y}-${m}-${d}`;
 }
 
-// Create a Date that represents Brisbane local time yyyy-mm-dd hh:mm, converted into real UTC Date.
-function brisbaneLocalToUtcDate(y, m, d, hh = 0, mm = 0, ss = 0) {
-  // Brisbane local time = UTC +10, so UTC = local -10h
-  const utcMs = Date.UTC(y, m - 1, d, hh, mm, ss) - BRISBANE_OFFSET_MIN * 60 * 1000;
-  return new Date(utcMs);
+// Returns DD-MM-YYYY for Brisbane local date
+function brisbaneDMY(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-AU", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(date);
+  const y = parts.find(p => p.type === "year").value;
+  const m = parts.find(p => p.type === "month").value;
+  const d = parts.find(p => p.type === "day").value;
+  return `${d}-${m}-${y}`;
 }
 
-function formatDayLabel(dateUtc) {
-  // Display in Brisbane timezone
-  const dtf = new Intl.DateTimeFormat("en-AU", {
+// Adds N days to a YYYY-MM-DD string (Brisbane calendar days)
+function addDaysYMD(ymd, n) {
+  // Create a Date at UTC midnight and adjust by days; then re-format in Brisbane.
+  // This is stable for Brisbane because there’s no DST.
+  const [y, m, d] = ymd.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + n);
+  return brisbaneYMD(dt);
+}
+
+// Label like "Thu 05 Feb"
+function labelForYMD(ymd) {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return new Intl.DateTimeFormat("en-AU", {
     timeZone: TZ,
     weekday: "short",
     day: "2-digit",
-    month: "short",
-  });
-  return dtf.format(dateUtc); // e.g. "Thu 05 Feb"
+    month: "short"
+  }).format(dt);
 }
 
-function formatIsoDateBrisbane(dateUtc) {
-  const dtf = new Intl.DateTimeFormat("en-CA", {
+function minutesToHHMM(mins) {
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return `${pad2(h)}:${pad2(m)}`;
+}
+
+function clamp(n, lo, hi) {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+// Parse a date-time to Brisbane minutes-from-midnight + day YMD
+function brisbaneDayAndMinute(isoOrDateString) {
+  const dt = new Date(isoOrDateString);
+  // Get Brisbane parts
+  const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: TZ,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  });
-  return dtf.format(dateUtc); // YYYY-MM-DD
-}
-
-function formatDDMMYYYY(dateUtc) {
-  const dtf = new Intl.DateTimeFormat("en-GB", {
-    timeZone: TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-  const parts = dtf.format(dateUtc).split("/"); // DD/MM/YYYY
-  return `${parts[0]}-${parts[1]}-${parts[2]}`;
-}
-
-function formatTimeBrisbane(dateUtc) {
-  const dtf = new Intl.DateTimeFormat("en-AU", {
-    timeZone: TZ,
     hour: "2-digit",
     minute: "2-digit",
-    hour12: false,
-  });
-  return dtf.format(dateUtc); // "14:05"
+    hour12: false
+  }).formatToParts(dt);
+
+  const y = parts.find(p => p.type === "year").value;
+  const mo = parts.find(p => p.type === "month").value;
+  const da = parts.find(p => p.type === "day").value;
+  const hh = Number(parts.find(p => p.type === "hour").value);
+  const mm = Number(parts.find(p => p.type === "minute").value);
+
+  return { ymd: `${y}-${mo}-${da}`, minuteOfDay: hh * 60 + mm };
 }
 
-function addMinutes(date, minutes) {
-  return new Date(date.getTime() + minutes * 60 * 1000);
-}
-
-function intervalsOverlap(aStart, aEnd, bStart, bEnd) {
-  return aStart < bEnd && bStart < aEnd;
-}
-
-function clampInterval(start, end, clampStart, clampEnd) {
-  const s = start < clampStart ? clampStart : start;
-  const e = end > clampEnd ? clampEnd : end;
-  if (s >= e) return null;
-  return [s, e];
-}
-
-function mergeIntervals(intervals) {
-  if (!intervals.length) return [];
-  intervals.sort((a, b) => a[0] - b[0]);
-  const merged = [intervals[0]];
-  for (let i = 1; i < intervals.length; i++) {
-    const [s, e] = intervals[i];
-    const last = merged[merged.length - 1];
-    if (s <= last[1]) {
-      last[1] = new Date(Math.max(last[1].getTime(), e.getTime()));
-    } else {
-      merged.push([s, e]);
+// --- fetch helpers with retry (429-safe) ---
+async function fetchWithRetry(url, options = {}, tries = 4) {
+  let attempt = 0;
+  let lastErr;
+  while (attempt < tries) {
+    try {
+      const res = await fetch(url, options);
+      if (res.status === 429) {
+        // exponential backoff: 400ms, 900ms, 1800ms...
+        const wait = Math.round(400 * Math.pow(2, attempt) + Math.random() * 200);
+        await new Promise(r => setTimeout(r, wait));
+        attempt++;
+        continue;
+      }
+      return res;
+    } catch (e) {
+      lastErr = e;
+      const wait = Math.round(300 * Math.pow(2, attempt) + Math.random() * 200);
+      await new Promise(r => setTimeout(r, wait));
+      attempt++;
     }
   }
-  return merged;
+  throw lastErr || new Error("fetch failed");
 }
 
-async function booqableFetch(path, { companySlug, apiKey, cacheKey, ttlMs }) {
-  const cached = memGet(cacheKey);
+function env(name) {
+  const v = process.env[name];
+  if (!v) throw new Error(`Missing environment variable: ${name}`);
+  return v;
+}
+
+// --- in-memory caches (helps rate limits on Vercel warm instances) ---
+const MEMORY = {
+  products: { value: null, expiresAt: 0 }, // 10 min
+  minutesByProduct: new Map() // key: `${productId}|${fromDMY}|${tillDMY}` -> {value, expiresAt}
+};
+
+function cacheGetProducts() {
+  if (MEMORY.products.value && Date.now() < MEMORY.products.expiresAt) return MEMORY.products.value;
+  return null;
+}
+function cacheSetProducts(value, ttlMs) {
+  MEMORY.products.value = value;
+  MEMORY.products.expiresAt = Date.now() + ttlMs;
+}
+function cacheGetMinutes(key) {
+  const hit = MEMORY.minutesByProduct.get(key);
+  if (!hit) return null;
+  if (Date.now() > hit.expiresAt) {
+    MEMORY.minutesByProduct.delete(key);
+    return null;
+  }
+  return hit.value;
+}
+function cacheSetMinutes(key, value, ttlMs) {
+  MEMORY.minutesByProduct.set(key, { value, expiresAt: Date.now() + ttlMs });
+}
+
+// --- business filtering: cars only ---
+function isCarProduct(p) {
+  // Booqable v1 product objects vary by account settings, so we use a defensive filter.
+  // We keep rental + trackable + show_in_store and exclude obvious add-ons by name.
+  const name = (p.name || "").toLowerCase();
+  const addOnHints = ["add on", "add-on", "addon", "excess", "charging cable", "additional driver", "accident"];
+  const looksLikeAddOn = addOnHints.some(h => name.includes(h));
+
+  const rental = p.rental === true;
+  const trackable = p.trackable === true;
+  const showInStore = p.show_in_store === true || p.show_in_storefront === true;
+
+  return rental && trackable && showInStore && !looksLikeAddOn;
+}
+
+async function listCarProducts(base, apiKey) {
+  const cached = cacheGetProducts();
   if (cached) return cached;
 
-  const url = `https://${companySlug}.booqable.com/api/1${path}${path.includes("?") ? "&" : "?"}api_key=${encodeURIComponent(apiKey)}`;
+  // V1 docs show pagination via page/per; many accounts fit in one page but we’ll paginate safely.
+  // Endpoint is usually /products (even though the docs nav is under Product Groups).
+  const per = 200;
+  let page = 1;
+  let all = [];
 
-  // Basic backoff for 429
-  const maxAttempts = 3;
-  let lastErr = null;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const res = await fetch(url, {
-      headers: { "Accept": "application/json" },
-    });
-
-    if (res.status === 429) {
-      lastErr = new Error(`Booqable rate limit (429) on ${path}`);
-      // Wait 400ms, 900ms, 1500ms
-      const wait = attempt === 1 ? 400 : attempt === 2 ? 900 : 1500;
-      await new Promise((r) => setTimeout(r, wait));
-      continue;
-    }
-
+  while (true) {
+    const url = `${base}/products?page=${page}&per=${per}&api_key=${encodeURIComponent(apiKey)}`;
+    const res = await fetchWithRetry(url, { method: "GET" });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(`Booqable error (${res.status}) on ${path}: ${text || res.statusText}`);
+      throw new Error(`Booqable error (${res.status}) on /products: ${text || res.statusText}`);
     }
-
     const data = await res.json();
-    memSet(cacheKey, data, ttlMs);
-    return data;
+    const products = data.products || [];
+    all = all.concat(products);
+    const meta = data.meta && data.meta.total_count ? data.meta.total_count : null;
+    if (meta && all.length >= meta) break;
+    if (products.length < per) break;
+    page++;
+    if (page > 20) break; // hard stop safety
   }
 
-  throw lastErr || new Error(`Failed to fetch ${path}`);
-}
+  const cars = all.filter(isCarProduct).map(p => ({
+    id: p.id,
+    name: (p.name || "").trim()
+  }));
 
-async function listCars({ companySlug, apiKey, ttlMs }) {
-  // Pull a lot in one go (adjust per if you have many)
-  const data = await booqableFetch(`/products?per=200&page=1`, {
-    companySlug,
-    apiKey,
-    cacheKey: `products:v1:per200:page1`,
-    ttlMs,
-  });
-
-  const products = data.products || [];
-
-  // Filter to cars only (excludes add-ons like Accident Excess):
-  // - rental === true
-  // - trackable === true
-  // - show_in_store === true
-  const cars = products
-    .filter((p) => p && p.rental === true && p.trackable === true && p.show_in_store === true)
-    .map((p) => ({
-      id: p.id,
-      name: (p.name || "").trim(),
-    }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-
+  // Cache for 10 minutes
+  cacheSetProducts(cars, 10 * 60 * 1000);
   return cars;
 }
 
-async function listOrdersOverlappingWindow({ companySlug, apiKey, windowStartUtc, windowEndUtc, ttlMs }) {
-  // Booqable v1 /orders supports paging, but not date filtering.
-  // We page a limited amount and filter client-side.
-  // If you have huge order volume, increase maxPages OR we can add a smarter strategy later.
-  const per = 100;
-  const maxPages = 6; // up to 600 orders per refresh
-  const overlapping = [];
+// Fetch minute availability for a product for a whole range
+async function fetchMinuteAvailability(base, apiKey, productId, fromDMY, tillDMY) {
+  const key = `${productId}|${fromDMY}|${tillDMY}`;
+  const cached = cacheGetMinutes(key);
+  if (cached) return cached;
 
-  for (let page = 1; page <= maxPages; page++) {
-    const data = await booqableFetch(`/orders?per=${per}&page=${page}`, {
-      companySlug,
-      apiKey,
-      cacheKey: `orders:v1:per${per}:page${page}`,
-      ttlMs,
-    });
+  const url =
+    `${base}/products/${encodeURIComponent(productId)}/availability` +
+    `?interval=minute&from=${encodeURIComponent(fromDMY)}&till=${encodeURIComponent(tillDMY)}` +
+    `&api_key=${encodeURIComponent(apiKey)}`;
 
-    const orders = data.orders || [];
-    if (!orders.length) break;
+  const res = await fetchWithRetry(url, { method: "GET" });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Booqable error (${res.status}) on /products/:id/availability: ${text || res.statusText}`);
+  }
+  const json = await res.json();
 
-    for (const o of orders) {
-      if (!o || !o.starts_at || !o.stops_at) continue;
+  // Cache minutes for 60 seconds (enough for refresh spam without hammering Booqable)
+  cacheSetMinutes(key, json, 60 * 1000);
+  return json;
+}
 
-      const start = new Date(o.starts_at);
-      const end = new Date(o.stops_at);
-      if (!isFinite(start) || !isFinite(end)) continue;
+// Convert minute availability payload into per-day busy segments (minutes)
+// Busy is defined as available === 0.
+function deriveDayWindows(minutePayload, daysSet) {
+  // minutePayload is an object keyed by timestamps. Each value has fields like available/reserved/concept etc.  [oai_citation:1‡developers.booqable.com](https://developers.booqable.com/v1.html)
+  // We only care about "available".
+  const busyByDay = new Map(); // ymd -> [minuteOfDay busy...]
+  for (const ymd of daysSet) busyByDay.set(ymd, []);
 
-      if (intervalsOverlap(start, end, windowStartUtc, windowEndUtc)) {
-        overlapping.push(o);
-      }
+  for (const [k, v] of Object.entries(minutePayload || {})) {
+    const available = (v && typeof v.available === "number") ? v.available : null;
+    const dateField = v && v.date ? v.date : null;
+    const source = dateField || k;
+    if (available === null) continue;
+
+    const { ymd, minuteOfDay } = brisbaneDayAndMinute(source);
+    if (!busyByDay.has(ymd)) continue;
+
+    if (available === 0) {
+      busyByDay.get(ymd).push(minuteOfDay);
+    }
+  }
+
+  // For each day, compute out/back windows based on min/max busy minute.
+  // Apply 15-min buffer by extending the busy end time by +15 minutes (staff re-rent buffer).
+  const outBackByDay = {};
+  for (const [ymd, mins] of busyByDay.entries()) {
+    if (!mins.length) {
+      outBackByDay[ymd] = { status: "Available", times: "" };
+      continue;
+    }
+    mins.sort((a, b) => a - b);
+    const first = mins[0];
+    const last = mins[mins.length - 1];
+
+    // If busy covers essentially whole day, call it Booked.
+    // "Whole day" = busy spans from 00:00 to 23:59.
+    const spansWholeDay = first <= 0 && last >= 1439;
+
+    if (spansWholeDay) {
+      outBackByDay[ymd] = { status: "Booked", times: "Out all day" };
+      continue;
     }
 
-    // If this page had fewer than `per`, stop early
-    if (orders.length < per) break;
+    const out = clamp(first, 0, 1439);
+    const back = clamp(last + 1 + BUFFER_MINUTES, 0, 1440 + BUFFER_MINUTES); // last busy minute + next minute + buffer
+
+    // Back can go past midnight; show "+1 day" if needed
+    let backStr = minutesToHHMM(clamp(back, 0, 1439));
+    let suffix = "";
+    if (back >= 1440) {
+      backStr = minutesToHHMM(back - 1440);
+      suffix = " (+1 day)";
+    }
+
+    // Heads-up = partially unavailable within the day
+    outBackByDay[ymd] = {
+      status: "Heads-up",
+      times: `Out ${minutesToHHMM(out)} → Back ${backStr}${suffix}`
+    };
   }
 
-  return overlapping;
+  return outBackByDay;
 }
 
-function orderIsActiveForBlocking(order) {
-  // We treat these statuses as affecting availability:
-  // concept, reserved, started, stopped (stopped is historical but still in list; overlap filter handles it)
-  // Exclude canceled if present.
-  const s = (order.status || "").toLowerCase();
-  if (s === "canceled" || s === "cancelled") return false;
-  return true;
-}
-
-function extractCarBookingsForDay({ orders, carId, dayStartUtc, dayEndUtc }) {
-  // Returns booking intervals (with buffer) that overlap this day.
-  // We try two linkages:
-  // 1) order.stock_item_ids includes carId (common for trackable items)
-  // 2) order.item_ids includes carId (fallback)
-  const intervals = [];
-  const sources = [];
-
-  for (const o of orders) {
-    if (!orderIsActiveForBlocking(o)) continue;
-
-    const stockIds = Array.isArray(o.stock_item_ids) ? o.stock_item_ids : [];
-    const itemIds = Array.isArray(o.item_ids) ? o.item_ids : [];
-    const matches = stockIds.includes(carId) || itemIds.includes(carId);
-    if (!matches) continue;
-
-    const start = new Date(o.starts_at);
-    const end = new Date(o.stops_at);
-
-    // Apply staff buffer
-    const startBuf = addMinutes(start, -BUFFER_MINUTES);
-    const endBuf = addMinutes(end, BUFFER_MINUTES);
-
-    const clamped = clampInterval(startBuf, endBuf, dayStartUtc, dayEndUtc);
-    if (!clamped) continue;
-
-    intervals.push(clamped);
-    sources.push({
-      order_id: o.id,
-      order_number: o.number,
-      status: o.status,
-      starts_at: o.starts_at,
-      stops_at: o.stops_at,
-      starts_buf: startBuf.toISOString(),
-      stops_buf: endBuf.toISOString(),
-    });
-  }
-
-  const merged = mergeIntervals(intervals);
-
-  return { mergedIntervals: merged, sources };
-}
-
-function statusForDay(mergedIntervals, dayStartUtc, dayEndUtc) {
-  if (!mergedIntervals.length) return { status: "Available", detail: "" };
-
-  const dayLen = dayEndUtc.getTime() - dayStartUtc.getTime();
-  let covered = 0;
-  for (const [s, e] of mergedIntervals) covered += (e.getTime() - s.getTime());
-
-  // If bookings cover basically the whole day window, call it Booked
-  // (allow 1 minute slack)
-  if (covered >= dayLen - 60 * 1000) {
-    return { status: "Booked", detail: "" };
-  }
-
-  // Otherwise it’s partially booked: Heads-up
-  return { status: "Heads-up", detail: "" };
-}
-
-function intervalsToTimesNote(mergedIntervals) {
-  if (!mergedIntervals.length) return "";
-
-  // Convert merged UTC intervals into Brisbane times
-  // Show as: "Out 09:30–13:15, 16:00–18:10"
-  const parts = mergedIntervals.map(([s, e]) => `${formatTimeBrisbane(s)}–${formatTimeBrisbane(e)}`);
-  return `Out ${parts.join(", ")} (includes 15-min buffer)`;
-}
-
-export default async function handler(req, res) {
+module.exports = async (req, res) => {
   try {
-    const companySlug = getEnv("BOOQABLE_COMPANY_SLUG");
-    const apiKey = getEnv("BOOQABLE_API_KEY");
+    if (req.method === "OPTIONS") return json(res, 204, {});
+    if (req.method !== "GET") return json(res, 405, { error: "Method not allowed" });
 
-    const ttlSeconds = Number(process.env.CACHE_TTL_SECONDS || DEFAULT_CACHE_TTL_SECONDS);
-    const ttlMs = Math.max(5, ttlSeconds) * 1000;
+    const COMPANY_SLUG = env("BOOQABLE_COMPANY_SLUG"); // e.g. "bubblegum-cars"
+    const API_KEY = env("BOOQABLE_API_KEY");
+    const base = `https://${COMPANY_SLUG}.booqable.com/api/1`;
 
-    // Build Brisbane day list (Today + next 3)
-    const { y, m, d } = nowBrisbaneParts();
-
+    // Days we want: Today + next 3 days (Brisbane)
+    const todayYMD = brisbaneYMD(new Date());
     const days = [];
-    for (let i = 0; i < DAYS; i++) {
-      const dayStartUtc = brisbaneLocalToUtcDate(y, m, d + i, 0, 0, 0);
-      const dayEndUtc = brisbaneLocalToUtcDate(y, m, d + i + 1, 0, 0, 0);
-
+    for (let i = 0; i < DAYS_TO_SHOW; i++) {
+      const ymd = addDaysYMD(todayYMD, i);
       days.push({
-        date: formatIsoDateBrisbane(dayStartUtc), // YYYY-MM-DD
-        label: formatDayLabel(dayStartUtc),       // e.g. Thu 05 Feb
-        from: formatDDMMYYYY(dayStartUtc),        // DD-MM-YYYY (Booqable examples use this)
-        till: formatDDMMYYYY(dayStartUtc),        // same-day window
-        _dayStartUtc: dayStartUtc,
-        _dayEndUtc: dayEndUtc,
+        date: ymd,
+        label: labelForYMD(ymd),
+        from: (() => {
+          const [y, m, d] = ymd.split("-");
+          return `${d}-${m}-${y}`;
+        })(),
+        till: (() => {
+          const [y, m, d] = ymd.split("-");
+          return `${d}-${m}-${y}`;
+        })()
       });
     }
 
-    // Whole window (include buffer just so we don’t miss edges)
-    const windowStartUtc = addMinutes(days[0]._dayStartUtc, -BUFFER_MINUTES);
-    const windowEndUtc = addMinutes(days[days.length - 1]._dayEndUtc, BUFFER_MINUTES);
+    const fromDMY = days[0].from;
+    const tillDMY = days[days.length - 1].till;
+    const daySet = new Set(days.map(d => d.date));
 
-    // Fetch cars + orders
-    const cars = await listCars({ companySlug, apiKey, ttlMs });
+    const cars = await listCarProducts(base, API_KEY);
 
-    const orders = await listOrdersOverlappingWindow({
-      companySlug,
-      apiKey,
-      windowStartUtc,
-      windowEndUtc,
-      ttlMs,
-    });
-
-    // Build statuses per car/day
-    const carsOut = [];
+    // For each car: fetch minute availability once for the whole 4-day range
+    const results = [];
     for (const car of cars) {
-      const statuses = {};
-      for (const day of days) {
-        const { mergedIntervals } = extractCarBookingsForDay({
-          orders,
-          carId: car.id,
-          dayStartUtc: day._dayStartUtc,
-          dayEndUtc: day._dayEndUtc,
-        });
-
-        const base = statusForDay(mergedIntervals, day._dayStartUtc, day._dayEndUtc);
-
-        // Attach times note if any booking that day
-        const timesNote = intervalsToTimesNote(mergedIntervals);
-        const detail = timesNote || base.detail || "";
-
-        statuses[day.date] = { status: base.status, detail };
+      let minutePayload;
+      try {
+        minutePayload = await fetchMinuteAvailability(base, API_KEY, car.id, fromDMY, tillDMY);
+      } catch (e) {
+        // If minute endpoint fails, still return something useful
+        const statuses = {};
+        for (const d of days) {
+          statuses[d.date] = { status: "Unknown", detail: "Could not read minute-by-minute availability for this range." };
+        }
+        results.push({ id: car.id, name: car.name, statuses });
+        continue;
       }
 
-      carsOut.push({
-        id: car.id,
-        name: car.name,
-        statuses,
-      });
+      const derived = deriveDayWindows(minutePayload, daySet);
+
+      const statuses = {};
+      for (const d of days) {
+        const info = derived[d.date] || { status: "Unknown", times: "" };
+        statuses[d.date] = {
+          status: info.status,
+          detail: info.times || ""
+        };
+      }
+
+      results.push({ id: car.id, name: car.name, statuses });
     }
 
-    // Strip internal fields
-    const cleanDays = days.map(({ _dayStartUtc, _dayEndUtc, ...rest }) => rest);
-
-    json(res, 200, {
-      days: cleanDays,
-      cars: carsOut,
-      meta: {
-        tz: TZ,
-        range_days: DAYS,
-        buffer_minutes: BUFFER_MINUTES,
-        source: "orders",
-      },
+    return json(res, 200, {
+      timezone: TZ,
+      rangeDays: DAYS_TO_SHOW,
+      bufferMinutes: BUFFER_MINUTES,
+      note: "Times derived from minute availability. Back time includes 15-minute re-rent buffer.",
+      days,
+      cars: results
     });
-  } catch (err) {
-    json(res, 500, { error: String(err.message || err) });
+  } catch (e) {
+    return json(res, 500, { error: String(e.message || e) });
   }
-}
+};
