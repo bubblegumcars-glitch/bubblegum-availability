@@ -1,266 +1,223 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="UTF-8" />
   <title>Bubblegum Cars — Staff Availability</title>
-  <style>
-    :root {
-      --bg: #fff;
-      --text: #111;
-      --muted: #666;
-      --border: #e7e7e7;
-      --pill: #f6f6f6;
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-      --ok: #0a7a2f;
-      --warn: #b85c00;
-      --bad: #b00020;
-    }
-    * { box-sizing: border-box; }
+  <style>
     body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #fafafa;
       margin: 0;
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
-      background: var(--bg);
-      color: var(--text);
+      padding: 24px;
+      color: #111;
     }
-    .wrap { max-width: 1100px; margin: 24px auto 60px; padding: 0 18px; }
-    h1 { font-size: 44px; margin: 0 0 10px; letter-spacing: -0.02em; }
-    .sub {
-      margin: 0 0 18px;
-      color: var(--muted);
-      font-size: 18px;
-      line-height: 1.35;
+
+    h1 {
+      font-size: 34px;
+      margin-bottom: 6px;
     }
-    .toolbar {
+
+    .subtitle {
+      color: #555;
+      margin-bottom: 16px;
+    }
+
+    .controls, .tabs {
       display: flex;
+      gap: 8px;
       flex-wrap: wrap;
-      gap: 10px;
-      align-items: center;
-      margin: 16px 0 18px;
+      margin-bottom: 16px;
     }
-    .btn, .pill {
-      border: 1px solid var(--border);
-      background: var(--pill);
+
+    .pill, .tab {
+      padding: 8px 14px;
       border-radius: 999px;
-      padding: 10px 14px;
+      background: #f0f0f0;
+      border: 1px solid #ddd;
       font-size: 14px;
-      color: var(--text);
-    }
-    .btn { cursor: pointer; }
-    .btn:active { transform: translateY(1px); }
-    .tabs {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      margin: 6px 0 16px;
-    }
-    .tab {
-      border: 1px solid var(--border);
-      background: #fff;
-      border-radius: 999px;
-      padding: 10px 14px;
       cursor: pointer;
-      font-weight: 600;
-      font-size: 14px;
     }
+
     .tab.active {
-      background: #111;
+      background: #000;
       color: #fff;
-      border-color: #111;
+      border-color: #000;
     }
 
     .card {
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      padding: 18px;
       background: #fff;
-      box-shadow: 0 1px 0 rgba(0,0,0,0.02);
-    }
-    .cardhead {
-      display: flex;
-      justify-content: space-between;
-      gap: 14px;
-      align-items: baseline;
-      margin-bottom: 14px;
-    }
-    .cardhead h2 {
-      margin: 0;
-      font-size: 40px;
-      letter-spacing: -0.02em;
-    }
-    .meta {
-      color: var(--muted);
-      font-size: 13px;
-      white-space: nowrap;
+      border-radius: 14px;
+      padding: 18px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.06);
     }
 
-    table { width: 100%; border-collapse: collapse; }
-    th, td { text-align: left; padding: 14px 10px; border-top: 1px solid var(--border); vertical-align: middle; }
-    th { color: var(--muted); font-weight: 700; font-size: 14px; }
-    .carname { font-weight: 800; font-size: 22px; }
-    .status { font-weight: 900; font-size: 26px; }
-    .status.ok { color: var(--ok); }
-    .status.warn { color: var(--warn); }
-    .status.bad { color: var(--bad); }
-    .detail { color: var(--muted); font-size: 15px; }
-    .error {
-      margin-top: 14px;
-      color: var(--bad);
-      font-weight: 800;
-      font-size: 18px;
-      white-space: pre-wrap;
+    table {
+      width: 100%;
+      border-collapse: collapse;
     }
-    .loading { color: var(--muted); font-weight: 700; margin-top: 14px; }
+
+    th, td {
+      padding: 12px 8px;
+      border-bottom: 1px solid #eee;
+    }
+
+    th {
+      font-size: 14px;
+      color: #666;
+      text-align: left;
+    }
+
+    .status {
+      font-weight: 700;
+    }
+
+    .available {
+      color: #1a7f37;
+    }
+
+    .booked {
+      color: #b42318;
+    }
+
+    .note {
+      font-size: 13px;
+      color: #666;
+    }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <h1>Bubblegum Cars — Staff Availability</h1>
-    <p class="sub">
-      Shows <b>Today + next 3 days</b> in Brisbane time. Day = midnight-to-midnight. Includes a <b>15-minute re-rent buffer</b>.
-      Anyone with the link can view.
-    </p>
 
-    <div class="toolbar">
-      <button class="btn" id="refreshBtn">Refresh</button>
-      <div class="pill" id="tzPill">Timezone: Australia/Brisbane</div>
-      <div class="pill" id="rangePill">Range: 4 days</div>
-      <div class="pill" id="bufferPill">Buffer: 15 minutes</div>
-      <div class="pill">View: Available / Booked / Heads-up + times</div>
-    </div>
+<h1>Bubblegum Cars — Staff Availability</h1>
+<div class="subtitle">
+  Shows <strong>Today + next 3 days</strong> in Brisbane time.
+  Day = midnight-to-midnight.
+  Anyone with the link can view.
+</div>
 
-    <div class="tabs" id="tabs"></div>
+<div class="controls">
+  <button class="pill" onclick="loadDays()">Refresh</button>
+  <div class="pill">Timezone: Australia/Brisbane</div>
+  <div class="pill">Range: 4 days</div>
+  <div class="pill">View: Available / Booked</div>
+</div>
 
-    <div class="card">
-      <div class="cardhead">
-        <h2 id="dayTitle">Loading…</h2>
-        <div class="meta" id="dayMeta">Brisbane time • midnight–midnight • 15-min buffer</div>
-      </div>
+<div class="tabs" id="tabs"></div>
 
-      <div id="content">
-        <div class="loading">Loading…</div>
-      </div>
-    </div>
+<div class="card">
+  <h2 id="dayTitle"></h2>
 
-    <div class="error" id="error" style="display:none"></div>
+  <table>
+    <thead>
+      <tr>
+        <th>Car</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody id="tableBody"></tbody>
+  </table>
+
+  <div class="note">
+    Availability matches the public Bubblegum Cars booking site.
   </div>
+</div>
 
-  <script>
-    const $ = (id) => document.getElementById(id);
+<script>
+let DAYS = [];
+let ACTIVE_DATE = null;
 
-    let state = {
-      data: null,
-      selectedDay: null
-    };
+function toDDMMYYYY(isoDate) {
+  const [y, m, d] = isoDate.split("-");
+  return `${d}-${m}-${y}`;
+}
 
-    function statusClass(s) {
-      if (s === "Available") return "ok";
-      if (s === "Booked") return "bad";
-      if (s === "Heads-up") return "warn";
-      return "";
-    }
+function loadDays() {
+  const now = new Date(
+    new Date().toLocaleString("en-US", { timeZone: "Australia/Brisbane" })
+  );
 
-    function renderTabs(days) {
-      const tabs = $("tabs");
-      tabs.innerHTML = "";
-      for (const d of days) {
-        const btn = document.createElement("button");
-        btn.className = "tab" + (state.selectedDay === d.date ? " active" : "");
-        btn.textContent = `${d.label} (${d.date})`;
-        btn.onclick = () => {
-          state.selectedDay = d.date;
-          render();
-        };
-        tabs.appendChild(btn);
-      }
-    }
+  DAYS = [];
+  for (let i = 0; i < 4; i++) {
+    const d = new Date(now);
+    d.setDate(now.getDate() + i);
 
-    function renderTableForDay(dayYMD) {
-      const { cars, days } = state.data;
-      const day = days.find(x => x.date === dayYMD);
-      $("dayTitle").textContent = `${day.label} — ${day.date}`;
+    const iso = d.toISOString().slice(0, 10);
+    const label = d.toLocaleDateString("en-AU", {
+      weekday: "short",
+      day: "2-digit",
+      month: "short"
+    });
 
-      const rows = cars.map(c => {
-        const s = c.statuses[dayYMD] || { status: "Unknown", detail: "" };
-        return `
-          <tr>
-            <td>
-              <div class="carname">${escapeHtml(c.name)}</div>
-            </td>
-            <td class="status ${statusClass(s.status)}">${escapeHtml(s.status)}</td>
-            <td class="detail">${escapeHtml(s.detail || "")}</td>
-          </tr>
-        `;
-      }).join("");
+    DAYS.push({ iso, label });
+  }
 
-      return `
-        <table>
-          <thead>
-            <tr>
-              <th>Car</th>
-              <th>Status</th>
-              <th>Times / Notes</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
-      `;
-    }
+  buildTabs();
+  setActiveDay(DAYS[0].iso);
+}
 
-    function escapeHtml(str) {
-      return String(str)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#039;");
-    }
+function buildTabs() {
+  const tabs = document.getElementById("tabs");
+  tabs.innerHTML = "";
 
-    function render() {
-      if (!state.data) return;
-      $("error").style.display = "none";
+  DAYS.forEach(d => {
+    const btn = document.createElement("button");
+    btn.className = "tab";
+    btn.textContent = `${d.label} (${d.iso})`;
+    btn.onclick = () => setActiveDay(d.iso);
+    btn.dataset.date = d.iso;
+    tabs.appendChild(btn);
+  });
+}
 
-      renderTabs(state.data.days);
+function setActiveDay(isoDate) {
+  ACTIVE_DATE = isoDate;
 
-      // update pills
-      $("tzPill").textContent = `Timezone: ${state.data.timezone || "Australia/Brisbane"}`;
-      $("rangePill").textContent = `Range: ${state.data.rangeDays || 4} days`;
-      $("bufferPill").textContent = `Buffer: ${state.data.bufferMinutes || 15} minutes`;
+  document.querySelectorAll(".tab").forEach(t =>
+    t.classList.toggle("active", t.dataset.date === isoDate)
+  );
 
-      const day = state.selectedDay || state.data.days[0].date;
-      state.selectedDay = day;
+  document.getElementById("dayTitle").textContent =
+    `${isoDate}`;
 
-      // re-mark active tab
-      renderTabs(state.data.days);
+  loadAvailability();
+}
 
-      $("content").innerHTML = renderTableForDay(day);
-    }
+function loadAvailability() {
+  const from = toDDMMYYYY(ACTIVE_DATE);
+  const till = from;
 
-    async function load() {
-      $("content").innerHTML = `<div class="loading">Loading…</div>`;
-      $("error").style.display = "none";
+  fetch(`/api/availability?from=${from}&till=${till}`)
+    .then(r => r.json())
+    .then(data => {
+      const tbody = document.getElementById("tableBody");
+      tbody.innerHTML = "";
 
-      try {
-        const res = await fetch("/api/availability", { cache: "no-store" });
-        const data = await res.json();
+      data.cars.forEach(car => {
+        const tr = document.createElement("tr");
 
-        if (!res.ok) {
-          throw new Error(data && data.error ? data.error : `HTTP ${res.status}`);
-        }
+        const nameTd = document.createElement("td");
+        nameTd.textContent = car.name;
 
-        state.data = data;
-        state.selectedDay = data.days[0].date;
-        render();
-      } catch (e) {
-        $("error").style.display = "block";
-        $("error").textContent = "Error:\n" + (e && e.message ? e.message : String(e));
-        $("content").innerHTML = "";
-      }
-    }
+        const statusTd = document.createElement("td");
+        const status = car.status;
+        statusTd.textContent = status;
+        statusTd.className =
+          "status " + (status === "Available" ? "available" : "booked");
 
-    $("refreshBtn").addEventListener("click", load);
+        tr.appendChild(nameTd);
+        tr.appendChild(statusTd);
+        tbody.appendChild(tr);
+      });
+    })
+    .catch(err => {
+      console.error(err);
+      alert("Failed to load availability");
+    });
+}
 
-    load();
-  </script>
+loadDays();
+</script>
+
 </body>
 </html>
