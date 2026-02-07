@@ -2,10 +2,11 @@
  * Bubblegum Cars Availability API
  * Vercel Serverless Function
  * 
- * Fetches car availability from Booqable API v3 (shop API) and returns structured data
- * for the next 4 days in Brisbane timezone.
+ * Uses hybrid approach for maximum reliability:
+ * - API v3 (shop API) for Betsy, Breezy, Bubbles
+ * - API v1 for Bean and Blossom (v3 doesn't return their bookings correctly)
  * 
- * Uses the same API endpoint as the customer booking website for accurate availability.
+ * Returns availability data for the next 4 days in Brisbane timezone.
  */
 
 // Helper: Get Brisbane midnight for a given date
@@ -25,6 +26,68 @@ function getBrisbaneMidnight(offsetDays = 0) {
     const utcTime = new Date(brisbaneTime.toISOString());
     
     return utcTime;
+}
+
+// Helper: Format date as DD-MM-YYYY for Booqable API v1
+function formatDateForAPI(date) {
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const year = date.getFullYear();
+    return `${day}-${month}-${year}`;
+}
+
+// Helper: Parse v1 availability data
+function parseV1Availability(availabilityData, startDate, endDate) {
+    if (!availabilityData || !availabilityData.data) {
+        return [];
+    }
+
+    const unavailableBlocks = [];
+    let currentBlock = null;
+
+    const minutes = Object.entries(availabilityData.data).sort((a, b) => {
+        return new Date(a[0]) - new Date(b[0]);
+    });
+
+    for (const [timestamp, count] of minutes) {
+        const time = new Date(timestamp);
+        const isUnavailable = count <= 0;
+
+        if (isUnavailable) {
+            if (!currentBlock) {
+                currentBlock = {
+                    start: new Date(time),
+                    end: new Date(time)
+                };
+            } else {
+                currentBlock.end = new Date(time);
+            }
+        } else {
+            if (currentBlock) {
+                const endWithBuffer = new Date(currentBlock.end);
+                endWithBuffer.setMinutes(endWithBuffer.getMinutes() + 15);
+                
+                unavailableBlocks.push({
+                    start: currentBlock.start.toISOString(),
+                    end: endWithBuffer.toISOString()
+                });
+                
+                currentBlock = null;
+            }
+        }
+    }
+
+    if (currentBlock) {
+        const endWithBuffer = new Date(currentBlock.end);
+        endWithBuffer.setMinutes(endWithBuffer.getMinutes() + 15);
+        
+        unavailableBlocks.push({
+            start: currentBlock.start.toISOString(),
+            end: endWithBuffer.toISOString()
+        });
+    }
+
+    return unavailableBlocks;
 }
 
 // Helper: Filter to only rental cars (exclude accessories and add-ons)
@@ -150,14 +213,46 @@ export default async function handler(req, res) {
             'Bubbles': 'c03a9629-816c-4010-bcf7-08e7780f5d4e'
         };
 
-        // Step 4: Fetch availability for each car using API v3
+        // Step 4: Fetch availability for each car
+        // Use hybrid approach: v1 for Bean/Blossom, v3 for others
         const carsWithAvailability = await Promise.all(
             cars.map(async (car) => {
                 try {
                     const carName = car.name.trim();
                     const itemId = itemIdMap[carName] || car.product_group_id || car.id;
 
-                    // Fetch availability for all 4 days
+                    // Bean and Blossom seem to work better with API v1
+                    if (carName === 'Bean' || carName === 'Blossom') {
+                        // Use API v1 for these cars
+                        const fromDate = formatDateForAPI(startDate);
+                        const tillDate = formatDateForAPI(endDate);
+                        const availURL = `${apiURL}/products/${itemId}/availability?interval=minute&from=${fromDate}&till=${tillDate}`;
+
+                        const availResponse = await fetch(availURL, {
+                            headers: {
+                                'Authorization': `Bearer ${BOOQABLE_API_KEY}`,
+                                'Content-Type': 'application/json'
+                            }
+                        });
+
+                        if (!availResponse.ok) {
+                            console.error(`API v1 failed for ${carName}:`, availResponse.status);
+                            return {
+                                name: carName,
+                                unavailable: []
+                            };
+                        }
+
+                        const availData = await availResponse.json();
+                        const unavailableBlocks = parseV1Availability(availData, startDate, endDate);
+
+                        return {
+                            name: carName,
+                            unavailable: unavailableBlocks
+                        };
+                    }
+
+                    // For other cars, use API v3
                     const allUnavailable = [];
 
                     for (let dayOffset = 0; dayOffset < 4; dayOffset++) {
@@ -169,7 +264,8 @@ export default async function handler(req, res) {
                         const day = dayDate.getDate();
 
                         // Use API v3 item_availabilities endpoint (same as booking site)
-                        const availURL = `${shopURL}/item_availabilities?filter[year]=${year}&filter[month]=${month}&filter[day]=${day}&filter[item_id]=${itemId}&filter[quantity]=1`;
+                        // Note: Adding locale parameter to match customer booking site
+                        const availURL = `${shopURL}/item_availabilities?filter[year]=${year}&filter[month]=${month}&filter[day]=${day}&filter[item_id]=${itemId}&filter[quantity]=1&locale=en`;
 
                         const availResponse = await fetch(availURL);
 
