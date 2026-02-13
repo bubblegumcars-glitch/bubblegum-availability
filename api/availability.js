@@ -1,30 +1,36 @@
 // api/availability.js
 // Bubblegum Cars staff availability (Booqable API v4)
 //
-// Rules:
-// - Only real cars (exclude add-ons)
-// - Green = Available
-// - Red = Booked (and if booking starts today, show From/Until)
-// - Orange = booked from the day before but returning today AND no other booking later today
-//   - Back = customer return time (stops_at if present else reserved_till)
-//   - Free = reserved_till (true re-rentable time incl buffer)
-// - Next available uses reserved_till of the currently active reservation
+// ENV you must set on Vercel:
+// - BOOQABLE_ACCESS_TOKEN
+// - BOOQABLE_COMPANY_SLUG = bubblegum-cars
+// - TIMEZONE_OFFSET_HOURS = 0   (prevents +10 hour shift)
+// Optional:
+// - EARLY_RETURN_CUTOFF_HOUR = 6 (default 6)
 
 function pad2(n) { return String(n).padStart(2, "0"); }
 function addDays(dateObj, days) { const d = new Date(dateObj); d.setDate(d.getDate() + days); return d; }
 function ymd(date) { return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`; }
 function overlaps(aFrom, aTill, bFrom, bTill) { return aFrom < bTill && aTill > bFrom; }
 
-const BRISBANE_OFFSET_MS = 10 * 60 * 60 * 1000;
+const TZ_OFFSET_HOURS = Number(process.env.TIMEZONE_OFFSET_HOURS ?? 0);
+const TZ_OFFSET_MS = TZ_OFFSET_HOURS * 60 * 60 * 1000;
+const EARLY_CUTOFF_HOUR = Number(process.env.EARLY_RETURN_CUTOFF_HOUR ?? 6);
 
 function fmtTime(iso) {
   const t = new Date(iso).getTime();
-  const b = new Date(t + BRISBANE_OFFSET_MS);
+  const b = new Date(t + TZ_OFFSET_MS);
   return `${pad2(b.getUTCHours())}:${pad2(b.getUTCMinutes())}`;
 }
 
+function hourInTz(iso) {
+  const t = new Date(iso).getTime();
+  const b = new Date(t + TZ_OFFSET_MS);
+  return b.getUTCHours();
+}
+
 function fmtDayLabelFromAbs(fromAbs) {
-  const b = new Date(fromAbs + BRISBANE_OFFSET_MS);
+  const b = new Date(fromAbs + TZ_OFFSET_MS);
   const weekdays = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
   const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   return `${weekdays[b.getUTCDay()]}, ${pad2(b.getUTCDate())} ${months[b.getUTCMonth()]}`;
@@ -32,41 +38,39 @@ function fmtDayLabelFromAbs(fromAbs) {
 
 function fmtDayTime(iso) {
   const t = new Date(iso).getTime();
-  const b = new Date(t + BRISBANE_OFFSET_MS);
+  const b = new Date(t + TZ_OFFSET_MS);
   const weekdays = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
   const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   const day = `${weekdays[b.getUTCDay()]}, ${pad2(b.getUTCDate())} ${months[b.getUTCMonth()]}`;
   return `${day} ${fmtTime(iso)}`;
 }
 
-// Brisbane midnight boundary as absolute timestamps
-function brisbaneDayBoundsAbs(dateObjBrisbane) {
-  const y = dateObjBrisbane.getFullYear();
-  const m = dateObjBrisbane.getMonth();
-  const d = dateObjBrisbane.getDate();
-  const fromUTC = Date.UTC(y, m, d, 0, 0, 0) - BRISBANE_OFFSET_MS;
-  const tillUTC = Date.UTC(y, m, d + 1, 0, 0, 0) - BRISBANE_OFFSET_MS;
+function dayBoundsAbs(dateObjInDisplayTz) {
+  const y = dateObjInDisplayTz.getFullYear();
+  const m = dateObjInDisplayTz.getMonth();
+  const d = dateObjInDisplayTz.getDate();
+  const fromUTC = Date.UTC(y, m, d, 0, 0, 0) - TZ_OFFSET_MS;
+  const tillUTC = Date.UTC(y, m, d + 1, 0, 0, 0) - TZ_OFFSET_MS;
   return { fromAbs: fromUTC, tillAbs: tillUTC };
 }
 
-function toISOWithPlus10(absMs) {
-  const b = new Date(absMs + BRISBANE_OFFSET_MS);
+function toISOWithOffset(absMs) {
+  const b = new Date(absMs + TZ_OFFSET_MS);
   const y = b.getUTCFullYear();
   const mo = pad2(b.getUTCMonth() + 1);
   const da = pad2(b.getUTCDate());
   const hh = pad2(b.getUTCHours());
   const mi = pad2(b.getUTCMinutes());
   const ss = pad2(b.getUTCSeconds());
-  return `${y}-${mo}-${da}T${hh}:${mi}:${ss}+10:00`;
+  const sign = TZ_OFFSET_HOURS >= 0 ? "+" : "-";
+  const off = Math.abs(TZ_OFFSET_HOURS);
+  const offHH = pad2(Math.floor(off));
+  return `${y}-${mo}-${da}T${hh}:${mi}:${ss}${sign}${offHH}:00`;
 }
 
-// ---- Product filtering (exclude add-ons) ----
 function isAddonProduct(p) {
   const a = p?.attributes || {};
-  const name = (a.name || "").toLowerCase().trim();
-  const group = (a.group_name || "").toLowerCase().trim();
-  const slug = (a.slug || "").toLowerCase().trim();
-  const hay = `${name} ${group} ${slug}`;
+  const hay = `${(a.name||"")} ${(a.group_name||"")} ${(a.slug||"")}`.toLowerCase();
 
   const badTokens = [
     "add on","add-on","additional driver","driver",
@@ -75,7 +79,6 @@ function isAddonProduct(p) {
     "charging cable","cable",
   ];
   if (badTokens.some(t => hay.includes(t))) return true;
-
   if (a.variation === true || a.has_variations === true) return true;
   if (a.tracking_type && a.tracking_type !== "trackable") return true;
   return false;
@@ -105,8 +108,7 @@ function sortCarsByYourOrder(cars) {
 }
 
 async function booqableFetch(baseUrl, token, path) {
-  const url = `${baseUrl}${path}`;
-  const res = await fetch(url, {
+  const res = await fetch(`${baseUrl}${path}`, {
     headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
   });
   const text = await res.text();
@@ -134,21 +136,20 @@ export default async function handler(req, res) {
 
     const baseUrl = `https://${COMPANY_SLUG}.booqable.com/api/4`;
     const rangeDays = Number(req.query.days || 4);
-    const debug = String(req.query.debug || "") === "1";
 
     const nowAbs = Date.now();
-    const todayBrisbane = new Date(nowAbs + BRISBANE_OFFSET_MS);
+    const todayInTz = new Date(nowAbs + TZ_OFFSET_MS);
 
     const days = Array.from({ length: rangeDays }, (_, i) => {
-      const d = addDays(todayBrisbane, i);
-      const { fromAbs, tillAbs } = brisbaneDayBoundsAbs(d);
+      const d = addDays(todayInTz, i);
+      const { fromAbs, tillAbs } = dayBoundsAbs(d);
       return {
         date: ymd(d),
         label: fmtDayLabelFromAbs(fromAbs),
         fromAbs,
         tillAbs,
-        from: toISOWithPlus10(fromAbs),
-        till: toISOWithPlus10(tillAbs),
+        from: toISOWithOffset(fromAbs),
+        till: toISOWithOffset(tillAbs),
       };
     });
 
@@ -196,11 +197,11 @@ export default async function handler(req, res) {
           return overlaps(aFrom, aTill, day.fromAbs, day.tillAbs);
         });
 
-        if (dayOverlaps.length === 0) {
+        if (!dayOverlaps.length) {
           return { date: day.date, label: day.label, status: "Available" };
         }
 
-        // 1) If ANY booking starts during this day, treat day as BOOKED and show From/Until
+        // If anything STARTS today -> show RED with From/Until
         const startsToday = dayOverlaps
           .filter(p => {
             const aFrom = new Date(p.reserved_from).getTime();
@@ -213,28 +214,16 @@ export default async function handler(req, res) {
           const fromIso = p.starts_at || p.reserved_from;
           const tillIso = p.stops_at || p.reserved_till;
 
-          const out = {
+          return {
             date: day.date,
             label: day.label,
             status: "Booked",
             bookedFrom: fmtTime(fromIso),
             bookedUntil: fmtTime(tillIso),
           };
-
-          if (debug) {
-            out.debug = {
-              planning_id: p.planning_id,
-              starts_at: p.starts_at,
-              stops_at: p.stops_at,
-              reserved_from: p.reserved_from,
-              reserved_till: p.reserved_till,
-            };
-          }
-
-          return out;
         }
 
-        // 2) Otherwise, we can show ORANGE only if it returns today and then stays free (no later overlaps)
+        // Otherwise, check carry-over return (ORANGE), but ignore early-morning returns (e.g. 03:00)
         const carryReturn = dayOverlaps
           .filter(p => {
             const aFrom = new Date(p.reserved_from).getTime();
@@ -246,6 +235,11 @@ export default async function handler(req, res) {
         if (carryReturn.length) {
           const p = carryReturn[0];
 
+          // If it returns before cutoff, treat as available for the day
+          if (hourInTz(p.reserved_till) < EARLY_CUTOFF_HOUR) {
+            return { date: day.date, label: day.label, status: "Available" };
+          }
+
           const backIso = p.stops_at || p.reserved_till;
           const freeIso = p.reserved_till;
 
@@ -256,23 +250,10 @@ export default async function handler(req, res) {
             backTime: fmtTime(backIso),
             freeTime: fmtTime(freeIso),
           };
-
           if (out.backTime === out.freeTime) delete out.freeTime;
-
-          if (debug) {
-            out.debug = {
-              planning_id: p.planning_id,
-              starts_at: p.starts_at,
-              stops_at: p.stops_at,
-              reserved_from: p.reserved_from,
-              reserved_till: p.reserved_till,
-            };
-          }
-
           return out;
         }
 
-        // 3) Otherwise booked all day / returns after day end
         return { date: day.date, label: day.label, status: "Booked" };
       });
 
@@ -289,15 +270,13 @@ export default async function handler(req, res) {
     return res.status(200).json({
       company: COMPANY_SLUG,
       rangeDays,
+      timezoneOffsetHours: TZ_OFFSET_HOURS,
+      earlyReturnCutoffHour: EARLY_CUTOFF_HOUR,
       days: days.map(d => ({ date: d.date, label: d.label })),
       cars: carsOut,
     });
 
   } catch (e) {
-    return res.status(500).json({
-      error: e.message || "Unknown error",
-      status: e.status,
-      body: e.body,
-    });
+    return res.status(500).json({ error: e.message, status: e.status, body: e.body });
   }
 }
