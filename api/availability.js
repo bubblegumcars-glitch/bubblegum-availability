@@ -1,6 +1,6 @@
 // api/availability.js (Vercel serverless)
 // Booqable API v4: https://{slug}.booqable.com/api/4
-// Availability in v4 is via inventory_levels (not /products/:id/availability)
+// Availability in v4 is via /inventory_levels with filter[item_id], filter[from], filter[till]
 
 function ymd(date) {
   const y = date.getFullYear();
@@ -23,7 +23,6 @@ function brisbaneFromTill(dateObj) {
   end.setDate(end.getDate() + 1);
 
   const toISOWithOffset = (d) => {
-    // Build YYYY-MM-DDTHH:mm:ss+10:00
     const yyyy = d.getFullYear();
     const mm = String(d.getMonth() + 1).padStart(2, "0");
     const dd = String(d.getDate()).padStart(2, "0");
@@ -45,7 +44,10 @@ function isLikelyAddon(p) {
     name.includes("excess") ||
     group.includes("excess") ||
     name.includes("driver") ||
-    group.includes("driver")
+    group.includes("driver") ||
+    name.includes("speaker") ||
+    name.includes("camera") ||
+    name.includes("cable")
   );
 }
 
@@ -62,7 +64,6 @@ function isCarProduct(p) {
 }
 
 function sortCars(cars) {
-  // Your preferred order (edit anytime)
   const order = ["Blossom", "Bubbles", "Bean", "Breezy", "Betsy"];
   const idx = (name) => {
     const i = order.indexOf(name);
@@ -124,7 +125,7 @@ module.exports = async (req, res) => {
 
     const cars = sortCars(products.filter(isCarProduct));
 
-    // 2) Build day windows (Brisbane midnight->midnight)
+    // 2) Day windows (Brisbane midnight->midnight)
     const days = Array.from({ length: rangeDays }, (_, i) => {
       const d = addDays(today, i);
       const { from, till } = brisbaneFromTill(d);
@@ -136,45 +137,21 @@ module.exports = async (req, res) => {
       };
     });
 
-    // 3) Map each car -> item_id (trackable products have items)
-    const productToItemId = {};
-    for (const car of cars) {
-      const itemsJson = await booqableFetch(
-        baseUrl,
-        TOKEN,
-        `/items?filter[product_id]=${encodeURIComponent(car.id)}&per_page=10`
-      );
-      const firstItem = (itemsJson.data || [])[0];
-      if (!firstItem?.id) {
-        // If no item exists, treat as unknown/booked to avoid false “Available”
-        productToItemId[car.id] = null;
-      } else {
-        productToItemId[car.id] = firstItem.id;
-      }
-    }
-
-    // 4) Availability via inventory_levels
+    // 3) Availability via inventory_levels, using item_id = product.id
     const results = [];
     for (const car of cars) {
-      const itemId = productToItemId[car.id];
       const carDays = [];
 
       for (const day of days) {
-        if (!itemId) {
-          carDays.push({ date: day.date, status: "Booked" });
-          continue;
-        }
-
         const path =
           `/inventory_levels` +
           `?filter[from]=${encodeURIComponent(day.from)}` +
           `&filter[till]=${encodeURIComponent(day.till)}` +
-          `&filter[item_id]=${encodeURIComponent(itemId)}`;
+          `&filter[item_id]=${encodeURIComponent(car.id)}`;
 
         const invJson = await booqableFetch(baseUrl, TOKEN, path);
         const inv = (invJson.data || [])[0]?.attributes || {};
 
-        // Use cluster_available as the “can it be booked at all” signal
         const availableQty =
           typeof inv.cluster_available === "number"
             ? inv.cluster_available
@@ -185,6 +162,7 @@ module.exports = async (req, res) => {
         carDays.push({
           date: day.date,
           status: availableQty > 0 ? "Available" : "Booked",
+          availableQty,
         });
       }
 
@@ -200,9 +178,9 @@ module.exports = async (req, res) => {
     return res.status(200).json({
       company: COMPANY_SLUG,
       rangeDays,
+      days,
       cars: results,
-      note:
-        "Availability derived from inventory_levels (API v4). Brisbane day windows. Buffer times are handled by Booqable product buffer settings.",
+      note: "API v4 availability via /inventory_levels using product UUID as item_id. Brisbane day windows.",
     });
   } catch (e) {
     return res.status(500).json({
