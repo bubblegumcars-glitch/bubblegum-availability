@@ -6,137 +6,130 @@
 <title>Bubblegum Staff Availability</title>
 
 <style>
-body {
-  font-family: Arial, sans-serif;
-  background: #f7f7f7;
-  margin: 0;
-  padding: 20px;
-}
-
-h1 {
-  text-align: center;
-}
-
-.card {
-  background: white;
-  border-radius: 12px;
-  padding: 15px;
-  margin-bottom: 20px;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.1);
-}
-
-.car-header {
-  display: flex;
-  align-items: center;
-  gap: 15px;
-}
-
-.car-header img {
-  width: 120px;
-  border-radius: 8px;
-}
-
-.days {
-  display: flex;
-  gap: 10px;
-  margin-top: 15px;
-  flex-wrap: wrap;
-}
-
-.day {
-  flex: 1;
-  min-width: 90px;
-  padding: 10px;
-  border-radius: 8px;
-  text-align: center;
-  font-weight: bold;
-  color: white;
-}
-
-.available {
-  background: #28a745;
-}
-
-.booked {
-  background: #dc3545;
-}
-
-.headsup {
-  background: #ff9800;
-}
+  body { font-family: Arial, sans-serif; background:#f7f7f7; margin:0; padding:20px; }
+  h1 { text-align:center; margin: 10px 0 20px; }
+  #app { max-width: 900px; margin: 0 auto; }
+  .card { background:#fff; border-radius:12px; padding:15px; margin: 0 0 16px; box-shadow:0 2px 6px rgba(0,0,0,0.1); }
+  .car-header { display:flex; align-items:center; gap:15px; }
+  .car-header img { width:120px; height:80px; object-fit:cover; border-radius:8px; background:#eee; }
+  .days { display:flex; gap:10px; margin-top:15px; flex-wrap:wrap; }
+  .day { flex:1; min-width:110px; padding:10px; border-radius:8px; text-align:center; font-weight:bold; color:#fff; }
+  .available { background:#28a745; }
+  .booked { background:#dc3545; }
+  .headsup { background:#ff9800; }
+  .muted { color:#666; font-size: 14px; text-align:center; margin-top:10px; }
+  .error { background:#fff3f3; border:1px solid #ffd0d0; color:#a10000; padding:12px; border-radius:10px; white-space:pre-wrap; }
+  .topbar { display:flex; justify-content:center; gap:10px; margin-bottom:14px; }
+  button { padding:10px 14px; border-radius:10px; border:0; cursor:pointer; box-shadow:0 2px 6px rgba(0,0,0,0.08); }
 </style>
 </head>
 
 <body>
+  <h1>Bubblegum Cars – Staff View</h1>
 
-<h1>Bubblegum Cars – Staff View</h1>
-<div id="app">Loading...</div>
+  <div class="topbar">
+    <button onclick="load()">Refresh</button>
+  </div>
+
+  <div id="app" class="muted">Loading…</div>
 
 <script>
 async function load() {
-  const res = await fetch('/api/availability');
-  const data = await res.json();
-
   const app = document.getElementById('app');
-  app.innerHTML = '';
+  app.className = 'muted';
+  app.textContent = 'Loading…';
 
-  const today = new Date();
-  const tomorrow = new Date();
-  tomorrow.setDate(today.getDate() + 1);
+  try {
+    // Cache-bust so you always see the latest data
+    const url = '/api/availability?cb=' + Date.now();
 
-  data.cars.forEach(car => {
+    const res = await fetch(url, { cache: 'no-store' });
 
-    const card = document.createElement('div');
-    card.className = 'card';
+    // If API returns HTML or an error JSON, show it clearly
+    const text = await res.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      throw new Error('API did not return JSON. Raw response:\\n\\n' + text.slice(0, 2000));
+    }
 
-    const header = document.createElement('div');
-    header.className = 'car-header';
+    if (!res.ok) {
+      throw new Error('API error ' + res.status + ':\\n\\n' + JSON.stringify(data, null, 2));
+    }
 
-    header.innerHTML = `
-      <img src="${car.photo_url}" />
-      <div>
-        <h2>${car.name.trim()}</h2>
-      </div>
-    `;
+    if (!data || !Array.isArray(data.cars)) {
+      throw new Error('Unexpected API shape (no cars array):\\n\\n' + JSON.stringify(data, null, 2));
+    }
 
-    const daysDiv = document.createElement('div');
-    daysDiv.className = 'days';
+    app.className = '';
+    app.innerHTML = '';
 
-    car.days.forEach(d => {
-      const dayBox = document.createElement('div');
-      dayBox.className = 'day';
+    const today = new Date();
+    const tomorrow = new Date(today);
+    tomorrow.setDate(today.getDate() + 1);
 
-      const dateObj = new Date(d.date);
-      let statusClass = '';
+    data.cars.forEach(car => {
+      const card = document.createElement('div');
+      card.className = 'card';
 
-      if (d.status === 'Available') {
-        statusClass = 'available';
-      } else {
-        statusClass = 'booked';
-      }
+      const header = document.createElement('div');
+      header.className = 'car-header';
 
-      // Heads-up logic (if tomorrow is booked)
-      if (d.status === 'Booked' && dateObj.toDateString() === tomorrow.toDateString()) {
-        statusClass = 'headsup';
-      }
+      const img = document.createElement('img');
+      img.src = car.photo_url || '';
+      img.alt = car.name || 'Car';
 
-      dayBox.classList.add(statusClass);
-      dayBox.innerHTML = `
-        ${new Date(d.date).toLocaleDateString('en-AU', {weekday: 'short'})}<br/>
-        ${d.status}
-      `;
+      const titleWrap = document.createElement('div');
+      const h2 = document.createElement('h2');
+      h2.style.margin = '0';
+      h2.textContent = (car.name || '').trim();
+      titleWrap.appendChild(h2);
 
-      daysDiv.appendChild(dayBox);
+      header.appendChild(img);
+      header.appendChild(titleWrap);
+
+      const daysDiv = document.createElement('div');
+      daysDiv.className = 'days';
+
+      (car.days || []).forEach(d => {
+        const dayBox = document.createElement('div');
+        dayBox.className = 'day';
+
+        const dateObj = new Date(d.date);
+
+        let statusClass = (d.status === 'Available') ? 'available' : 'booked';
+
+        // Heads-up rule: if TOMORROW is booked, flag it
+        if (d.status === 'Booked' && dateObj.toDateString() === tomorrow.toDateString()) {
+          statusClass = 'headsup';
+        }
+
+        dayBox.classList.add(statusClass);
+        dayBox.innerHTML = `
+          ${dateObj.toLocaleDateString('en-AU', { weekday: 'short' })}<br/>
+          ${d.status}
+        `;
+        daysDiv.appendChild(dayBox);
+      });
+
+      card.appendChild(header);
+      card.appendChild(daysDiv);
+      app.appendChild(card);
     });
 
-    card.appendChild(header);
-    card.appendChild(daysDiv);
-    app.appendChild(card);
-  });
+    const foot = document.createElement('div');
+    foot.className = 'muted';
+    foot.textContent = 'Last updated: ' + new Date().toLocaleString('en-AU');
+    app.appendChild(foot);
+
+  } catch (err) {
+    app.className = 'error';
+    app.textContent = 'Dashboard error:\\n\\n' + (err && err.message ? err.message : String(err));
+  }
 }
 
 load();
 </script>
-
 </body>
 </html>
