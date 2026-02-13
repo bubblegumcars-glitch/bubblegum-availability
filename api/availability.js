@@ -1,12 +1,13 @@
 // api/availability.js
 // Bubblegum Cars staff availability (Booqable API v4)
 //
-// ENV you must set on Vercel:
+// ENV (Vercel):
 // - BOOQABLE_ACCESS_TOKEN
-// - BOOQABLE_COMPANY_SLUG = bubblegum-cars
-// - TIMEZONE_OFFSET_HOURS = 0   (prevents +10 hour shift)
+// - BOOQABLE_COMPANY_SLUG=bubblegum-cars
+// - TIMEZONE_OFFSET_HOURS=0
 // Optional:
-// - EARLY_RETURN_CUTOFF_HOUR = 6 (default 6)
+// - EARLY_RETURN_CUTOFF_HOUR=6
+// - MIN_RENTABLE_GAP_HOURS=4
 
 function pad2(n) { return String(n).padStart(2, "0"); }
 function addDays(dateObj, days) { const d = new Date(dateObj); d.setDate(d.getDate() + days); return d; }
@@ -16,6 +17,8 @@ function overlaps(aFrom, aTill, bFrom, bTill) { return aFrom < bTill && aTill > 
 const TZ_OFFSET_HOURS = Number(process.env.TIMEZONE_OFFSET_HOURS ?? 0);
 const TZ_OFFSET_MS = TZ_OFFSET_HOURS * 60 * 60 * 1000;
 const EARLY_CUTOFF_HOUR = Number(process.env.EARLY_RETURN_CUTOFF_HOUR ?? 6);
+const MIN_GAP_HOURS = Number(process.env.MIN_RENTABLE_GAP_HOURS ?? 4);
+const MIN_GAP_MS = MIN_GAP_HOURS * 60 * 60 * 1000;
 
 function fmtTime(iso) {
   const t = new Date(iso).getTime();
@@ -71,7 +74,6 @@ function toISOWithOffset(absMs) {
 function isAddonProduct(p) {
   const a = p?.attributes || {};
   const hay = `${(a.name||"")} ${(a.group_name||"")} ${(a.slug||"")}`.toLowerCase();
-
   const badTokens = [
     "add on","add-on","additional driver","driver",
     "accident excess","excess",
@@ -121,6 +123,71 @@ async function booqableFetch(baseUrl, token, path) {
     throw err;
   }
   return json;
+}
+
+// Find the first "free time" that has at least MIN_GAP_HOURS until the next booking starts
+function computeRealisticNextAvailable(plannings, nowAbs) {
+  // Future bookings sorted by start
+  const future = plannings
+    .map(p => ({
+      startAbs: new Date(p.reserved_from).getTime(),
+      endAbs: new Date(p.reserved_till).getTime(),
+      reserved_till: p.reserved_till,
+    }))
+    .filter(p => p.endAbs > nowAbs)
+    .sort((a, b) => a.startAbs - b.startAbs);
+
+  if (!future.length) return null;
+
+  // Build a merged "busy intervals" list
+  const busy = [];
+  for (const b of future) {
+    if (!busy.length) busy.push({ start: b.startAbs, end: b.endAbs });
+    else {
+      const last = busy[busy.length - 1];
+      if (b.startAbs <= last.end) last.end = Math.max(last.end, b.endAbs);
+      else busy.push({ start: b.startAbs, end: b.endAbs });
+    }
+  }
+
+  // If currently free: candidate = now. Otherwise candidate = end of active interval.
+  let candidate = nowAbs;
+  for (const interval of busy) {
+    if (candidate >= interval.start && candidate < interval.end) {
+      candidate = interval.end;
+      break;
+    }
+    if (candidate < interval.start) break;
+  }
+
+  // Walk gaps and find a gap >= MIN_GAP_MS
+  // (gap is from candidate to next interval start, or infinity after last)
+  for (let i = 0; i < busy.length; i++) {
+    const interval = busy[i];
+
+    // if candidate is before this busy interval, we have a gap
+    if (candidate < interval.start) {
+      const gap = interval.start - candidate;
+      if (gap >= MIN_GAP_MS) {
+        // return candidate as the realistic next available time
+        // (display uses reserved_till style; but candidate is abs)
+        const iso = new Date(candidate).toISOString();
+        return iso;
+      }
+      // gap too small, skip to end of this busy interval
+      candidate = interval.end;
+      continue;
+    }
+
+    // if candidate is inside this interval, jump to its end
+    if (candidate >= interval.start && candidate < interval.end) {
+      candidate = interval.end;
+    }
+  }
+
+  // After last booking: it will be available, and gap is infinite, so return candidate
+  const iso = new Date(candidate).toISOString();
+  return iso;
 }
 
 export default async function handler(req, res) {
@@ -176,7 +243,6 @@ export default async function handler(req, res) {
       const plannings = (planningsJson.data || []).map(p => {
         const a = p.attributes || {};
         return {
-          planning_id: p.id,
           reserved_from: a.reserved_from || a.starts_at,
           reserved_till: a.reserved_till || a.stops_at,
           starts_at: a.starts_at || null,
@@ -184,11 +250,9 @@ export default async function handler(req, res) {
         };
       }).filter(p => p.reserved_from && p.reserved_till);
 
-      const activeNow = plannings
-        .filter(p => new Date(p.reserved_from).getTime() <= nowAbs && new Date(p.reserved_till).getTime() > nowAbs)
-        .sort((a, b) => new Date(a.reserved_till) - new Date(b.reserved_till));
-
-      const nextAvailable = activeNow.length ? fmtDayTime(activeNow[0].reserved_till) : null;
+      // Realistic next available
+      const realisticIso = computeRealisticNextAvailable(plannings, nowAbs);
+      const nextAvailable = realisticIso ? fmtDayTime(realisticIso) : null;
 
       const dayStatuses = days.map(day => {
         const dayOverlaps = plannings.filter(p => {
@@ -201,7 +265,6 @@ export default async function handler(req, res) {
           return { date: day.date, label: day.label, status: "Available" };
         }
 
-        // If anything STARTS today -> show RED with From/Until
         const startsToday = dayOverlaps
           .filter(p => {
             const aFrom = new Date(p.reserved_from).getTime();
@@ -223,7 +286,6 @@ export default async function handler(req, res) {
           };
         }
 
-        // Otherwise, check carry-over return (ORANGE), but ignore early-morning returns (e.g. 03:00)
         const carryReturn = dayOverlaps
           .filter(p => {
             const aFrom = new Date(p.reserved_from).getTime();
@@ -235,7 +297,6 @@ export default async function handler(req, res) {
         if (carryReturn.length) {
           const p = carryReturn[0];
 
-          // If it returns before cutoff, treat as available for the day
           if (hourInTz(p.reserved_till) < EARLY_CUTOFF_HOUR) {
             return { date: day.date, label: day.label, status: "Available" };
           }
@@ -272,6 +333,7 @@ export default async function handler(req, res) {
       rangeDays,
       timezoneOffsetHours: TZ_OFFSET_HOURS,
       earlyReturnCutoffHour: EARLY_CUTOFF_HOUR,
+      minRentableGapHours: MIN_GAP_HOURS,
       days: days.map(d => ({ date: d.date, label: d.label })),
       cars: carsOut,
     });
