@@ -7,18 +7,29 @@
 
 <style>
   body { font-family: Arial, sans-serif; background:#f7f7f7; margin:0; padding:20px; }
-  h1 { text-align:center; margin: 10px 0 20px; }
+  h1 { text-align:center; margin: 10px 0 10px; }
   #app { max-width: 900px; margin: 0 auto; }
+
   .card { background:#fff; border-radius:12px; padding:15px; margin: 0 0 16px; box-shadow:0 2px 6px rgba(0,0,0,0.1); }
-  .car-header { display:flex; align-items:center; gap:15px; }
+  .car-header { display:flex; align-items:center; gap:15px; justify-content:space-between; }
+  .left { display:flex; align-items:center; gap:15px; }
   .car-header img { width:120px; height:80px; object-fit:cover; border-radius:8px; background:#eee; }
+  .car-title { margin:0; font-size:22px; }
+  .next { font-size:14px; color:#444; text-align:right; }
+  .next strong { display:block; font-size:13px; color:#777; font-weight:700; letter-spacing:0.3px; }
+  .next .time { font-size:16px; font-weight:700; color:#111; }
+
   .days { display:flex; gap:10px; margin-top:15px; flex-wrap:wrap; }
-  .day { flex:1; min-width:110px; padding:10px; border-radius:8px; text-align:center; font-weight:bold; color:#fff; }
+  .day { flex:1; min-width:120px; padding:10px; border-radius:10px; text-align:center; font-weight:800; color:#fff; }
   .available { background:#28a745; }
   .booked { background:#dc3545; }
   .headsup { background:#ff9800; }
+
+  .day .small { display:block; margin-top:6px; font-size:13px; font-weight:800; opacity:0.95; }
+
   .muted { color:#666; font-size: 14px; text-align:center; margin-top:10px; }
   .error { background:#fff3f3; border:1px solid #ffd0d0; color:#a10000; padding:12px; border-radius:10px; white-space:pre-wrap; }
+
   .topbar { display:flex; justify-content:center; gap:10px; margin-bottom:14px; }
   button { padding:10px 14px; border-radius:10px; border:0; cursor:pointer; box-shadow:0 2px 6px rgba(0,0,0,0.08); }
 </style>
@@ -40,34 +51,17 @@ async function load() {
   app.textContent = 'Loading…';
 
   try {
-    // Cache-bust so you always see the latest data
-    const url = '/api/availability?cb=' + Date.now();
-
-    const res = await fetch(url, { cache: 'no-store' });
-
-    // If API returns HTML or an error JSON, show it clearly
+    const res = await fetch('/api/availability?cb=' + Date.now(), { cache: 'no-store' });
     const text = await res.text();
     let data;
-    try {
-      data = JSON.parse(text);
-    } catch (e) {
-      throw new Error('API did not return JSON. Raw response:\\n\\n' + text.slice(0, 2000));
-    }
+    try { data = JSON.parse(text); }
+    catch { throw new Error('API did not return JSON:\\n\\n' + text.slice(0, 2000)); }
 
-    if (!res.ok) {
-      throw new Error('API error ' + res.status + ':\\n\\n' + JSON.stringify(data, null, 2));
-    }
-
-    if (!data || !Array.isArray(data.cars)) {
-      throw new Error('Unexpected API shape (no cars array):\\n\\n' + JSON.stringify(data, null, 2));
-    }
+    if (!res.ok) throw new Error('API error ' + res.status + ':\\n\\n' + JSON.stringify(data, null, 2));
+    if (!data || !Array.isArray(data.cars)) throw new Error('Unexpected API shape:\\n\\n' + JSON.stringify(data, null, 2));
 
     app.className = '';
     app.innerHTML = '';
-
-    const today = new Date();
-    const tomorrow = new Date(today);
-    tomorrow.setDate(today.getDate() + 1);
 
     data.cars.forEach(car => {
       const card = document.createElement('div');
@@ -76,18 +70,33 @@ async function load() {
       const header = document.createElement('div');
       header.className = 'car-header';
 
+      const left = document.createElement('div');
+      left.className = 'left';
+
       const img = document.createElement('img');
       img.src = car.photo_url || '';
       img.alt = car.name || 'Car';
 
       const titleWrap = document.createElement('div');
       const h2 = document.createElement('h2');
-      h2.style.margin = '0';
+      h2.className = 'car-title';
       h2.textContent = (car.name || '').trim();
       titleWrap.appendChild(h2);
 
-      header.appendChild(img);
-      header.appendChild(titleWrap);
+      left.appendChild(img);
+      left.appendChild(titleWrap);
+
+      const next = document.createElement('div');
+      next.className = 'next';
+
+      if (car.nextAvailable) {
+        next.innerHTML = `<strong>Next available</strong><div class="time">${car.nextAvailable}</div>`;
+      } else {
+        next.innerHTML = `<strong>Status</strong><div class="time">Available now</div>`;
+      }
+
+      header.appendChild(left);
+      header.appendChild(next);
 
       const daysDiv = document.createElement('div');
       daysDiv.className = 'days';
@@ -96,20 +105,22 @@ async function load() {
         const dayBox = document.createElement('div');
         dayBox.className = 'day';
 
-        const dateObj = new Date(d.date);
+        let cls = 'booked';
+        if (d.status === 'Available') cls = 'available';
+        if (d.status === 'Heads-up') cls = 'headsup';
+        if (d.status === 'Booked') cls = 'booked';
 
-        let statusClass = (d.status === 'Available') ? 'available' : 'booked';
+        dayBox.classList.add(cls);
 
-        // Heads-up rule: if TOMORROW is booked, flag it
-        if (d.status === 'Booked' && dateObj.toDateString() === tomorrow.toDateString()) {
-          statusClass = 'headsup';
-        }
+        const label = d.label || new Date(d.date).toLocaleDateString('en-AU', { weekday: 'short' });
+        const mainText = (d.status === 'Heads-up') ? 'Booked' : d.status;
 
-        dayBox.classList.add(statusClass);
         dayBox.innerHTML = `
-          ${dateObj.toLocaleDateString('en-AU', { weekday: 'short' })}<br/>
-          ${d.status}
+          ${label}<br/>
+          ${mainText}
+          ${d.status === 'Heads-up' && d.returnTime ? `<span class="small">Back ${d.returnTime}</span>` : ``}
         `;
+
         daysDiv.appendChild(dayBox);
       });
 
@@ -125,7 +136,7 @@ async function load() {
 
   } catch (err) {
     app.className = 'error';
-    app.textContent = 'Dashboard error:\\n\\n' + (err && err.message ? err.message : String(err));
+    app.textContent = 'Dashboard error:\\n\\n' + (err?.message || String(err));
   }
 }
 
