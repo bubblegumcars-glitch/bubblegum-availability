@@ -1,8 +1,8 @@
 // api/availability.js (Vercel serverless)
-// Uses Booqable API v4: https://{slug}.booqable.com/api/4
+// Booqable API v4: https://{slug}.booqable.com/api/4
+// Availability in v4 is via inventory_levels (not /products/:id/availability)
 
 function ymd(date) {
-  // YYYY-MM-DD
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");
   const d = String(date.getDate()).padStart(2, "0");
@@ -13,6 +13,27 @@ function addDays(date, days) {
   const d = new Date(date);
   d.setDate(d.getDate() + days);
   return d;
+}
+
+// Brisbane is UTC+10 (no DST)
+function brisbaneFromTill(dateObj) {
+  const start = new Date(dateObj);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+
+  const toISOWithOffset = (d) => {
+    // Build YYYY-MM-DDTHH:mm:ss+10:00
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mi = String(d.getMinutes()).padStart(2, "0");
+    const ss = String(d.getSeconds()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}+10:00`;
+  };
+
+  return { from: toISOWithOffset(start), till: toISOWithOffset(end) };
 }
 
 function isLikelyAddon(p) {
@@ -34,8 +55,8 @@ function isCarProduct(p) {
     a.product_type === "rental" &&
     a.trackable === true &&
     a.show_in_store === true &&
-    a.tracking_type === "trackable" && // excludes bulk add-ons like speaker/polaroid
-    a.variation === false &&            // excludes “Additional Driver(s)” variation add-on
+    a.tracking_type === "trackable" &&
+    a.variation === false &&
     !isLikelyAddon(p)
   );
 }
@@ -48,32 +69,6 @@ function sortCars(cars) {
     return i === -1 ? 999 : i;
   };
   return cars.sort((x, y) => idx(x.attributes.name) - idx(y.attributes.name));
-}
-
-// Try parsing availability intervals in a few common shapes.
-// We only need: "is there ANY availability in that day?"
-function extractIntervals(json) {
-  // Common patterns:
-  // 1) { data: [ { attributes: { starts_at, ends_at, available } } ... ] }
-  // 2) { data: [ { from, till, available } ... ] }
-  // 3) { availability: [ ... ] }
-  const data = json?.data || json?.availability || json;
-  if (!Array.isArray(data)) return [];
-
-  return data
-    .map((row) => {
-      const a = row?.attributes || row;
-      const from = a.starts_at || a.from || a.start || a.startsAt;
-      const till = a.ends_at || a.till || a.end || a.endsAt;
-      const available =
-        a.available ??
-        a.is_available ??
-        a.isAvailable ??
-        a.status === "available";
-
-      return { from, till, available: Boolean(available) };
-    })
-    .filter((x) => x.from && x.till);
 }
 
 async function booqableFetch(baseUrl, token, path) {
@@ -104,7 +99,6 @@ async function booqableFetch(baseUrl, token, path) {
 }
 
 module.exports = async (req, res) => {
-  // CORS (so your index.html can call this endpoint)
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
@@ -118,51 +112,79 @@ module.exports = async (req, res) => {
     }
 
     const baseUrl = `https://${COMPANY_SLUG}.booqable.com/api/4`;
-
     const rangeDays = Number(req.query.days || 4);
     const today = new Date();
 
-    // 1) Get products
+    // 1) Products
     const productsJson = await booqableFetch(baseUrl, TOKEN, `/products?per_page=200`);
     const products = (productsJson.data || []).map((p) => ({
       id: p.id,
       attributes: p.attributes || {},
     }));
 
-    // 2) Filter cars only
     const cars = sortCars(products.filter(isCarProduct));
 
-    // 3) For each car, fetch day-by-day availability
+    // 2) Build day windows (Brisbane midnight->midnight)
     const days = Array.from({ length: rangeDays }, (_, i) => {
       const d = addDays(today, i);
+      const { from, till } = brisbaneFromTill(d);
       return {
         date: ymd(d),
         label: d.toLocaleDateString("en-AU", { weekday: "short", day: "2-digit", month: "short" }),
-        from: ymd(d),
-        till: ymd(d),
+        from,
+        till,
       };
     });
 
+    // 3) Map each car -> item_id (trackable products have items)
+    const productToItemId = {};
+    for (const car of cars) {
+      const itemsJson = await booqableFetch(
+        baseUrl,
+        TOKEN,
+        `/items?filter[product_id]=${encodeURIComponent(car.id)}&per_page=10`
+      );
+      const firstItem = (itemsJson.data || [])[0];
+      if (!firstItem?.id) {
+        // If no item exists, treat as unknown/booked to avoid false “Available”
+        productToItemId[car.id] = null;
+      } else {
+        productToItemId[car.id] = firstItem.id;
+      }
+    }
+
+    // 4) Availability via inventory_levels
     const results = [];
     for (const car of cars) {
+      const itemId = productToItemId[car.id];
       const carDays = [];
 
       for (const day of days) {
-        // This matches what Booqable hinted at: /availability?interval=minute&from=...&till=...
-        // If Booqable expects a different date format, we’ll adjust — but start here.
-        const path = `/products/${car.id}/availability?interval=minute&from=${encodeURIComponent(
-          day.from
-        )}&till=${encodeURIComponent(day.till)}`;
+        if (!itemId) {
+          carDays.push({ date: day.date, status: "Booked" });
+          continue;
+        }
 
-        const availJson = await booqableFetch(baseUrl, TOKEN, path);
-        const intervals = extractIntervals(availJson);
+        const path =
+          `/inventory_levels` +
+          `?filter[from]=${encodeURIComponent(day.from)}` +
+          `&filter[till]=${encodeURIComponent(day.till)}` +
+          `&filter[item_id]=${encodeURIComponent(itemId)}`;
 
-        // Available if ANY interval is available=true
-        const anyAvailable = intervals.some((x) => x.available === true);
+        const invJson = await booqableFetch(baseUrl, TOKEN, path);
+        const inv = (invJson.data || [])[0]?.attributes || {};
+
+        // Use cluster_available as the “can it be booked at all” signal
+        const availableQty =
+          typeof inv.cluster_available === "number"
+            ? inv.cluster_available
+            : typeof inv.location_available === "number"
+            ? inv.location_available
+            : 0;
 
         carDays.push({
           date: day.date,
-          status: anyAvailable ? "Available" : "Booked",
+          status: availableQty > 0 ? "Available" : "Booked",
         });
       }
 
@@ -179,6 +201,8 @@ module.exports = async (req, res) => {
       company: COMPANY_SLUG,
       rangeDays,
       cars: results,
+      note:
+        "Availability derived from inventory_levels (API v4). Brisbane day windows. Buffer times are handled by Booqable product buffer settings.",
     });
   } catch (e) {
     return res.status(500).json({
