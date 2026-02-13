@@ -27,7 +27,6 @@
   .headsup { background:#ff9800; }
 
   .day .small { display:block; margin-top:6px; font-size:13px; font-weight:900; opacity:0.98; }
-  .day .debug { display:block; margin-top:6px; font-size:11px; font-weight:800; opacity:0.95; line-height:1.15; }
 
   .muted { color:#666; font-size: 14px; text-align:center; margin-top:10px; }
   .error { background:#fff3f3; border:1px solid #ffd0d0; color:#a10000; padding:12px; border-radius:10px; white-space:pre-wrap; }
@@ -47,19 +46,13 @@
   <div id="app" class="muted">Loading…</div>
 
 <script>
-function debugOn() {
-  return new URLSearchParams(window.location.search).get('debug') === '1';
-}
-
 async function load() {
   const app = document.getElementById('app');
   app.className = 'muted';
   app.textContent = 'Loading…';
 
-  const dbg = debugOn();
-
   try {
-    const url = '/api/availability?cb=' + Date.now() + (dbg ? '&debug=1' : '');
+    const url = '/api/availability?cb=' + Date.now();
     const res = await fetch(url, { cache: 'no-store' });
     const text = await res.text();
     let data;
@@ -122,24 +115,20 @@ async function load() {
         const mainText = (d.status === 'Heads-up') ? 'Booked' : d.status;
 
         let extra = '';
+
         if (d.status === 'Heads-up') {
           if (d.backTime) extra += `<span class="small">Back ${d.backTime}</span>`;
           if (d.freeTime) extra += `<span class="small">Free ${d.freeTime}</span>`;
         }
 
-        let debugHtml = '';
-        if (dbg && d.debug) {
-          debugHtml =
-            `<span class="debug">id: ${d.debug.planning_id}</span>` +
-            `<span class="debug">stops_at: ${d.debug.stops_at || '-'}</span>` +
-            `<span class="debug">reserved_till: ${d.debug.reserved_till || '-'}</span>`;
+        if (d.status === 'Booked' && d.bookedFrom && d.bookedUntil) {
+          extra += `<span class="small">From ${d.bookedFrom} → ${d.bookedUntil}</span>`;
         }
 
         dayBox.innerHTML = `
           ${d.label || ''}<br/>
           ${mainText}
           ${extra}
-          ${debugHtml}
         `;
 
         daysDiv.appendChild(dayBox);
@@ -152,7 +141,7 @@ async function load() {
 
     const foot = document.createElement('div');
     foot.className = 'muted';
-    foot.textContent = 'Last updated: ' + new Date().toLocaleString('en-AU') + (dbg ? ' (debug on)' : '');
+    foot.textContent = 'Last updated: ' + new Date().toLocaleString('en-AU');
     app.appendChild(foot);
 
   } catch (err) {
