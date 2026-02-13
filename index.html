@@ -1,52 +1,142 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="UTF-8">
-  <title>Bubblegum Cars – Availability</title>
-  <style>
-    body { font-family: Arial, sans-serif; padding: 20px; }
-    .car { margin-bottom: 12px; }
-    .unavailable { color: red; font-weight: bold; }
-    input[type="date"] { margin-right: 8px; }
-  </style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Bubblegum Staff Availability</title>
+
+<style>
+body {
+  font-family: Arial, sans-serif;
+  background: #f7f7f7;
+  margin: 0;
+  padding: 20px;
+}
+
+h1 {
+  text-align: center;
+}
+
+.card {
+  background: white;
+  border-radius: 12px;
+  padding: 15px;
+  margin-bottom: 20px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+}
+
+.car-header {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.car-header img {
+  width: 120px;
+  border-radius: 8px;
+}
+
+.days {
+  display: flex;
+  gap: 10px;
+  margin-top: 15px;
+  flex-wrap: wrap;
+}
+
+.day {
+  flex: 1;
+  min-width: 90px;
+  padding: 10px;
+  border-radius: 8px;
+  text-align: center;
+  font-weight: bold;
+  color: white;
+}
+
+.available {
+  background: #28a745;
+}
+
+.booked {
+  background: #dc3545;
+}
+
+.headsup {
+  background: #ff9800;
+}
+</style>
 </head>
+
 <body>
-  <h1>Check Car Availability</h1>
 
-  <label>
-    From: <input id="from" type="date">
-  </label>
-  <label>
-    To: <input id="to" type="date">
-  </label>
-  <button onclick="checkAvailability()">Check availability</button>
+<h1>Bubblegum Cars – Staff View</h1>
+<div id="app">Loading...</div>
 
-  <h2>Cars:</h2>
-  <ul id="carList"></ul>
+<script>
+async function load() {
+  const res = await fetch('/api/availability');
+  const data = await res.json();
 
-  <script>
-    async function checkAvailability() {
-      const from = document.getElementById('from').value;
-      const to = document.getElementById('to').value;
+  const app = document.getElementById('app');
+  app.innerHTML = '';
 
-      // Fetch from our API handler
-      const params = new URLSearchParams();
-      if (from) params.append('from', new Date(from).toISOString());
-      if (to)   params.append('to',   new Date(to).toISOString());
+  const today = new Date();
+  const tomorrow = new Date();
+  tomorrow.setDate(today.getDate() + 1);
 
-      const res = await fetch('/api/availability?' + params.toString());
-      const data = await res.json();
+  data.cars.forEach(car => {
 
-      const ul = document.getElementById('carList');
-      ul.innerHTML = ''; // Clear previous results
-      data.cars.forEach((car) => {
-        const li = document.createElement('li');
-        li.className = 'car';
-        const unavailable = car.unavailable.length > 0;
-        li.innerHTML = `${car.name} ${unavailable ? '<span class="unavailable">(Unavailable)</span>' : ''}`;
-        ul.appendChild(li);
-      });
-    }
-  </script>
+    const card = document.createElement('div');
+    card.className = 'card';
+
+    const header = document.createElement('div');
+    header.className = 'car-header';
+
+    header.innerHTML = `
+      <img src="${car.photo_url}" />
+      <div>
+        <h2>${car.name.trim()}</h2>
+      </div>
+    `;
+
+    const daysDiv = document.createElement('div');
+    daysDiv.className = 'days';
+
+    car.days.forEach(d => {
+      const dayBox = document.createElement('div');
+      dayBox.className = 'day';
+
+      const dateObj = new Date(d.date);
+      let statusClass = '';
+
+      if (d.status === 'Available') {
+        statusClass = 'available';
+      } else {
+        statusClass = 'booked';
+      }
+
+      // Heads-up logic (if tomorrow is booked)
+      if (d.status === 'Booked' && dateObj.toDateString() === tomorrow.toDateString()) {
+        statusClass = 'headsup';
+      }
+
+      dayBox.classList.add(statusClass);
+      dayBox.innerHTML = `
+        ${new Date(d.date).toLocaleDateString('en-AU', {weekday: 'short'})}<br/>
+        ${d.status}
+      `;
+
+      daysDiv.appendChild(dayBox);
+    });
+
+    card.appendChild(header);
+    card.appendChild(daysDiv);
+    app.appendChild(card);
+  });
+}
+
+load();
+</script>
+
 </body>
 </html>
