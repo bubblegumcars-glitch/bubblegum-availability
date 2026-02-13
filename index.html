@@ -26,7 +26,7 @@
   .booked { background:#dc3545; }
   .headsup { background:#ff9800; }
 
-  .day .small { display:block; margin-top:6px; font-size:13px; font-weight:800; opacity:0.95; }
+  .day .small { display:block; margin-top:6px; font-size:13px; font-weight:900; opacity:0.98; }
 
   .muted { color:#666; font-size: 14px; text-align:center; margin-top:10px; }
   .error { background:#fff3f3; border:1px solid #ffd0d0; color:#a10000; padding:12px; border-radius:10px; white-space:pre-wrap; }
@@ -109,15 +109,22 @@ async function load() {
         if (d.status === 'Available') cls = 'available';
         if (d.status === 'Heads-up') cls = 'headsup';
         if (d.status === 'Booked') cls = 'booked';
-
         dayBox.classList.add(cls);
 
         const mainText = (d.status === 'Heads-up') ? 'Booked' : d.status;
 
+        let extra = '';
+        if (d.status === 'Heads-up' && d.backTime) {
+          extra = `<span class="small">Back ${d.backTime}</span>`;
+          if (d.freeTime) {
+            extra += `<span class="small">Free ${d.freeTime}</span>`;
+          }
+        }
+
         dayBox.innerHTML = `
           ${d.label}<br/>
           ${mainText}
-          ${d.status === 'Heads-up' && d.returnTime ? `<span class="small">Back ${d.returnTime}</span>` : ``}
+          ${extra}
         `;
 
         daysDiv.appendChild(dayBox);
