@@ -15,9 +15,10 @@
   .left { display:flex; align-items:center; gap:15px; }
   .car-header img { width:120px; height:80px; object-fit:cover; border-radius:8px; background:#eee; }
   .car-title { margin:0; font-size:22px; }
-  .next { font-size:14px; color:#444; text-align:right; }
-  .next strong { display:block; font-size:13px; color:#777; font-weight:700; letter-spacing:0.3px; }
-  .next .time { font-size:16px; font-weight:700; color:#111; }
+
+  .right { font-size:14px; color:#444; text-align:right; }
+  .right strong { display:block; font-size:13px; color:#777; font-weight:700; letter-spacing:0.3px; }
+  .right .time { font-size:16px; font-weight:700; color:#111; }
 
   .days { display:flex; gap:10px; margin-top:15px; flex-wrap:wrap; }
   .day { flex:1; min-width:120px; padding:10px; border-radius:10px; text-align:center; font-weight:800; color:#fff; }
@@ -55,10 +56,10 @@ async function load() {
     const text = await res.text();
     let data;
     try { data = JSON.parse(text); }
-    catch { throw new Error('API did not return JSON:\\n\\n' + text.slice(0, 2000)); }
+    catch { throw new Error('API did not return JSON:\n\n' + text.slice(0, 2000)); }
 
-    if (!res.ok) throw new Error('API error ' + res.status + ':\\n\\n' + JSON.stringify(data, null, 2));
-    if (!data || !Array.isArray(data.cars)) throw new Error('Unexpected API shape:\\n\\n' + JSON.stringify(data, null, 2));
+    if (!res.ok) throw new Error('API error ' + res.status + ':\n\n' + JSON.stringify(data, null, 2));
+    if (!data || !Array.isArray(data.cars)) throw new Error('Unexpected API shape:\n\n' + JSON.stringify(data, null, 2));
 
     app.className = '';
     app.innerHTML = '';
@@ -86,17 +87,16 @@ async function load() {
       left.appendChild(img);
       left.appendChild(titleWrap);
 
-      const next = document.createElement('div');
-      next.className = 'next';
-
+      const right = document.createElement('div');
+      right.className = 'right';
       if (car.nextAvailable) {
-        next.innerHTML = `<strong>Next available</strong><div class="time">${car.nextAvailable}</div>`;
+        right.innerHTML = `<strong>Next available</strong><div class="time">${car.nextAvailable}</div>`;
       } else {
-        next.innerHTML = `<strong>Status</strong><div class="time">Available now</div>`;
+        right.innerHTML = `<strong>Status</strong><div class="time">Available now</div>`;
       }
 
       header.appendChild(left);
-      header.appendChild(next);
+      header.appendChild(right);
 
       const daysDiv = document.createElement('div');
       daysDiv.className = 'days';
@@ -112,11 +112,10 @@ async function load() {
 
         dayBox.classList.add(cls);
 
-        const label = d.label || new Date(d.date).toLocaleDateString('en-AU', { weekday: 'short' });
         const mainText = (d.status === 'Heads-up') ? 'Booked' : d.status;
 
         dayBox.innerHTML = `
-          ${label}<br/>
+          ${d.label}<br/>
           ${mainText}
           ${d.status === 'Heads-up' && d.returnTime ? `<span class="small">Back ${d.returnTime}</span>` : ``}
         `;
@@ -136,7 +135,7 @@ async function load() {
 
   } catch (err) {
     app.className = 'error';
-    app.textContent = 'Dashboard error:\\n\\n' + (err?.message || String(err));
+    app.textContent = 'Dashboard error:\n\n' + (err?.message || String(err));
   }
 }
 
