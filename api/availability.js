@@ -125,69 +125,53 @@ async function booqableFetch(baseUrl, token, path) {
   return json;
 }
 
-// Find the first "free time" that has at least MIN_GAP_HOURS until the next booking starts
-function computeRealisticNextAvailable(plannings, nowAbs) {
-  // Future bookings sorted by start
-  const future = plannings
+// Return the first free moment that has >= MIN_GAP_MS until the next booking starts.
+// NOTE: this returns an ISO string. Caller decides whether to show it.
+function computeRealisticNextAvailableIso(plannings, nowAbs) {
+  const intervals = plannings
     .map(p => ({
-      startAbs: new Date(p.reserved_from).getTime(),
-      endAbs: new Date(p.reserved_till).getTime(),
-      reserved_till: p.reserved_till,
+      start: new Date(p.reserved_from).getTime(),
+      end: new Date(p.reserved_till).getTime(),
     }))
-    .filter(p => p.endAbs > nowAbs)
-    .sort((a, b) => a.startAbs - b.startAbs);
+    .filter(x => x.end > nowAbs)
+    .sort((a, b) => a.start - b.start);
 
-  if (!future.length) return null;
+  if (!intervals.length) return null;
 
-  // Build a merged "busy intervals" list
+  // merge overlaps
   const busy = [];
-  for (const b of future) {
-    if (!busy.length) busy.push({ start: b.startAbs, end: b.endAbs });
+  for (const i of intervals) {
+    if (!busy.length) busy.push({ start: i.start, end: i.end });
     else {
       const last = busy[busy.length - 1];
-      if (b.startAbs <= last.end) last.end = Math.max(last.end, b.endAbs);
-      else busy.push({ start: b.startAbs, end: b.endAbs });
+      if (i.start <= last.end) last.end = Math.max(last.end, i.end);
+      else busy.push({ start: i.start, end: i.end });
     }
   }
 
-  // If currently free: candidate = now. Otherwise candidate = end of active interval.
+  // candidate = now, unless currently in a busy interval
   let candidate = nowAbs;
-  for (const interval of busy) {
-    if (candidate >= interval.start && candidate < interval.end) {
-      candidate = interval.end;
+  for (const b of busy) {
+    if (candidate >= b.start && candidate < b.end) {
+      candidate = b.end;
       break;
     }
-    if (candidate < interval.start) break;
+    if (candidate < b.start) break;
   }
 
-  // Walk gaps and find a gap >= MIN_GAP_MS
-  // (gap is from candidate to next interval start, or infinity after last)
-  for (let i = 0; i < busy.length; i++) {
-    const interval = busy[i];
-
-    // if candidate is before this busy interval, we have a gap
-    if (candidate < interval.start) {
-      const gap = interval.start - candidate;
-      if (gap >= MIN_GAP_MS) {
-        // return candidate as the realistic next available time
-        // (display uses reserved_till style; but candidate is abs)
-        const iso = new Date(candidate).toISOString();
-        return iso;
-      }
-      // gap too small, skip to end of this busy interval
-      candidate = interval.end;
-      continue;
-    }
-
-    // if candidate is inside this interval, jump to its end
-    if (candidate >= interval.start && candidate < interval.end) {
-      candidate = interval.end;
+  // scan gaps
+  for (const b of busy) {
+    if (candidate < b.start) {
+      const gap = b.start - candidate;
+      if (gap >= MIN_GAP_MS) return new Date(candidate).toISOString();
+      candidate = b.end; // too small: jump over next booking
+    } else if (candidate >= b.start && candidate < b.end) {
+      candidate = b.end;
     }
   }
 
-  // After last booking: it will be available, and gap is infinite, so return candidate
-  const iso = new Date(candidate).toISOString();
-  return iso;
+  // after last booking: always rentable
+  return new Date(candidate).toISOString();
 }
 
 export default async function handler(req, res) {
@@ -250,9 +234,23 @@ export default async function handler(req, res) {
         };
       }).filter(p => p.reserved_from && p.reserved_till);
 
-      // Realistic next available
-      const realisticIso = computeRealisticNextAvailable(plannings, nowAbs);
-      const nextAvailable = realisticIso ? fmtDayTime(realisticIso) : null;
+      // Are we booked right now?
+      const isBookedNow = plannings.some(p => {
+        const s = new Date(p.reserved_from).getTime();
+        const e = new Date(p.reserved_till).getTime();
+        return s <= nowAbs && nowAbs < e;
+      });
+
+      // Next available display:
+      // - If not booked now => show "Available now" (NOT a timestamp)
+      // - If booked now => compute realistic next available with min gap rule
+      let nextAvailable = null;
+      if (!isBookedNow) {
+        nextAvailable = "Available now";
+      } else {
+        const iso = computeRealisticNextAvailableIso(plannings, nowAbs);
+        nextAvailable = iso ? fmtDayTime(iso) : null;
+      }
 
       const dayStatuses = days.map(day => {
         const dayOverlaps = plannings.filter(p => {
