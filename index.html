@@ -1,156 +1,277 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Bubblegum Staff Availability</title>
-
-<style>
-  body { font-family: Arial, sans-serif; background:#f7f7f7; margin:0; padding:20px; }
-  h1 { text-align:center; margin: 10px 0 10px; }
-  #app { max-width: 900px; margin: 0 auto; }
-
-  .card { background:#fff; border-radius:12px; padding:15px; margin: 0 0 16px; box-shadow:0 2px 6px rgba(0,0,0,0.1); }
-  .car-header { display:flex; align-items:center; gap:15px; justify-content:space-between; }
-  .left { display:flex; align-items:center; gap:15px; }
-  .car-header img { width:120px; height:80px; object-fit:cover; border-radius:8px; background:#eee; }
-  .car-title { margin:0; font-size:22px; }
-
-  .right { font-size:14px; color:#444; text-align:right; }
-  .right strong { display:block; font-size:13px; color:#777; font-weight:700; letter-spacing:0.3px; }
-  .right .time { font-size:16px; font-weight:700; color:#111; }
-
-  .days { display:flex; gap:10px; margin-top:15px; flex-wrap:wrap; }
-  .day { flex:1; min-width:120px; padding:10px; border-radius:10px; text-align:center; font-weight:800; color:#fff; }
-  .available { background:#28a745; }
-  .booked { background:#dc3545; }
-  .headsup { background:#ff9800; }
-
-  .day .small { display:block; margin-top:6px; font-size:13px; font-weight:900; opacity:0.98; }
-
-  .muted { color:#666; font-size: 14px; text-align:center; margin-top:10px; }
-  .error { background:#fff3f3; border:1px solid #ffd0d0; color:#a10000; padding:12px; border-radius:10px; white-space:pre-wrap; }
-
-  .topbar { display:flex; justify-content:center; gap:10px; margin-bottom:14px; }
-  button { padding:10px 14px; border-radius:10px; border:0; cursor:pointer; box-shadow:0 2px 6px rgba(0,0,0,0.08); }
-</style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Bubblegum Cars – Staff View</title>
+  <style>
+    :root{
+      --bg:#f4f5f7;
+      --card:#ffffff;
+      --text:#111;
+      --muted:#777;
+      --shadow: 0 6px 16px rgba(0,0,0,.10);
+      --green:#28a745;
+      --red:#dc3545;
+      --orange:#f39c12;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      background:var(--bg);
+      color:var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    }
+    header{
+      padding:22px 16px 8px;
+      text-align:center;
+    }
+    h1{
+      margin:0;
+      font-size:34px;
+      font-weight:800;
+      letter-spacing:.2px;
+    }
+    .controls{
+      display:flex;
+      justify-content:center;
+      gap:10px;
+      padding:10px 16px 14px;
+    }
+    button{
+      border:none;
+      background:#e9eaee;
+      padding:10px 16px;
+      border-radius:10px;
+      font-weight:700;
+      cursor:pointer;
+    }
+    button:active{transform:scale(.99)}
+    .wrap{
+      max-width:1180px;
+      margin:0 auto;
+      padding:0 14px 28px;
+    }
+    .car{
+      background:var(--card);
+      border-radius:16px;
+      box-shadow:var(--shadow);
+      margin:14px 0;
+      overflow:hidden;
+    }
+    .carTop{
+      display:flex;
+      gap:16px;
+      padding:16px;
+      align-items:center;
+    }
+    .thumb{
+      width:110px;
+      height:70px;
+      border-radius:10px;
+      object-fit:cover;
+      background:#ddd;
+      flex:0 0 auto;
+    }
+    .meta{
+      flex:1;
+      min-width:0;
+    }
+    .name{
+      font-size:34px;
+      font-weight:800;
+      margin:0 0 4px;
+      line-height:1.05;
+    }
+    .next{
+      text-align:right;
+      min-width:160px;
+    }
+    .next .label{
+      color:#888;
+      font-weight:800;
+      font-size:18px;
+      line-height:1.1;
+    }
+    .next .value{
+      font-weight:900;
+      font-size:24px;
+      line-height:1.1;
+    }
+    .days{
+      display:grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap:10px;
+      padding:0 16px 16px;
+    }
+    .day{
+      border-radius:14px;
+      padding:12px 10px;
+      color:#fff;
+      font-weight:900;
+      text-align:center;
+      line-height:1.1;
+      min-height:86px;
+      display:flex;
+      flex-direction:column;
+      justify-content:center;
+    }
+    .day .top{
+      font-size:22px;
+      margin-bottom:4px;
+    }
+    .day .mid{
+      font-size:22px;
+      margin-bottom:4px;
+    }
+    .day .small{
+      font-size:18px;
+      font-weight:800;
+      opacity:.95;
+    }
+    .green{ background:var(--green); }
+    .red{ background:var(--red); }
+    .orange{ background:var(--orange); }
+    .footer{
+      text-align:center;
+      color:var(--muted);
+      font-weight:700;
+      padding:12px 0 4px;
+    }
+    .error{
+      background:#fff;
+      border-radius:14px;
+      box-shadow:var(--shadow);
+      padding:14px;
+      margin:14px 0;
+      color:#b00020;
+      font-weight:800;
+    }
+    @media (max-width: 860px){
+      .name{font-size:28px}
+      .days{grid-template-columns: repeat(2, minmax(0, 1fr));}
+      .next{min-width:140px}
+    }
+  </style>
 </head>
-
 <body>
-  <h1>Bubblegum Cars – Staff View</h1>
+  <header>
+    <h1>Bubblegum Cars – Staff View</h1>
+  </header>
 
-  <div class="topbar">
-    <button onclick="load()">Refresh</button>
+  <div class="controls">
+    <button id="refreshBtn">Refresh</button>
   </div>
 
-  <div id="app" class="muted">Loading…</div>
+  <div class="wrap">
+    <div id="content"></div>
+    <div class="footer" id="updated"></div>
+  </div>
 
 <script>
-async function load() {
-  const app = document.getElementById('app');
-  app.className = 'muted';
-  app.textContent = 'Loading…';
+  const content = document.getElementById("content");
+  const updated = document.getElementById("updated");
+  const refreshBtn = document.getElementById("refreshBtn");
 
-  try {
-    const url = '/api/availability?cb=' + Date.now();
-    const res = await fetch(url, { cache: 'no-store' });
-    const text = await res.text();
-    let data;
-    try { data = JSON.parse(text); }
-    catch { throw new Error('API did not return JSON:\n\n' + text.slice(0, 2000)); }
+  function esc(s){
+    return String(s ?? "").replace(/[&<>"']/g, c => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
+    })[c]);
+  }
 
-    if (!res.ok) throw new Error('API error ' + res.status + ':\n\n' + JSON.stringify(data, null, 2));
-    if (!data || !Array.isArray(data.cars)) throw new Error('Unexpected API shape:\n\n' + JSON.stringify(data, null, 2));
+  function statusClass(status){
+    if (status === "Available") return "green";
+    if (status === "Booked") return "red";
+    return "orange"; // Heads-up
+  }
 
-    app.className = '';
-    app.innerHTML = '';
+  function renderDay(d){
+    const cls = statusClass(d.status);
+    const label = esc(d.label || d.date || "");
+    const status = esc(d.status);
 
-    data.cars.forEach(car => {
-      const card = document.createElement('div');
-      card.className = 'card';
+    if (d.status === "Booked" && d.bookedFrom && d.bookedUntil){
+      return `
+        <div class="day ${cls}">
+          <div class="top">${label}</div>
+          <div class="mid">${status}</div>
+          <div class="small">From ${esc(d.bookedFrom)} → ${esc(d.bookedUntil)}</div>
+        </div>
+      `;
+    }
 
-      const header = document.createElement('div');
-      header.className = 'car-header';
+    if (d.status === "Heads-up"){
+      const back = d.backTime ? `<div class="small">Back ${esc(d.backTime)}</div>` : "";
+      const free = d.freeTime ? `<div class="small">Free ${esc(d.freeTime)}</div>` : "";
+      return `
+        <div class="day ${cls}">
+          <div class="top">${label}</div>
+          <div class="mid">Booked</div>
+          ${back}
+          ${free}
+        </div>
+      `;
+    }
 
-      const left = document.createElement('div');
-      left.className = 'left';
+    return `
+      <div class="day ${cls}">
+        <div class="top">${label}</div>
+        <div class="mid">${status}</div>
+      </div>
+    `;
+  }
 
-      const img = document.createElement('img');
-      img.src = car.photo_url || '';
-      img.alt = car.name || 'Car';
+  function renderCar(car){
+    const name = esc(car.name);
+    const img = esc(car.photo_url || "");
+    const next = esc(car.nextAvailable || "");
 
-      const titleWrap = document.createElement('div');
-      const h2 = document.createElement('h2');
-      h2.className = 'car-title';
-      h2.textContent = (car.name || '').trim();
-      titleWrap.appendChild(h2);
+    const daysHtml = (car.days || []).slice(0,4).map(renderDay).join("");
 
-      left.appendChild(img);
-      left.appendChild(titleWrap);
+    return `
+      <div class="car">
+        <div class="carTop">
+          <img class="thumb" src="${img}" alt="${name}" onerror="this.style.visibility='hidden'"/>
+          <div class="meta">
+            <div class="name">${name}</div>
+          </div>
+          <div class="next">
+            <div class="label">Next available</div>
+            <div class="value">${next}</div>
+          </div>
+        </div>
+        <div class="days">
+          ${daysHtml}
+        </div>
+      </div>
+    `;
+  }
 
-      const right = document.createElement('div');
-      right.className = 'right';
-      if (car.nextAvailable) {
-        right.innerHTML = `<strong>Next available</strong><div class="time">${car.nextAvailable}</div>`;
-      } else {
-        right.innerHTML = `<strong>Status</strong><div class="time">Available now</div>`;
+  async function load(){
+    content.innerHTML = "";
+    updated.textContent = "";
+
+    try{
+      const res = await fetch(`/api/availability?days=4&_=${Date.now()}`, { cache: "no-store" });
+      const data = await res.json();
+
+      if (!res.ok || data.error){
+        content.innerHTML = `<div class="error">${esc(data.error || "Error loading availability")}</div>`;
+        return;
       }
 
-      header.appendChild(left);
-      header.appendChild(right);
+      const cars = data.cars || [];
+      content.innerHTML = cars.map(renderCar).join("");
 
-      const daysDiv = document.createElement('div');
-      daysDiv.className = 'days';
-
-      (car.days || []).forEach(d => {
-        const dayBox = document.createElement('div');
-        dayBox.className = 'day';
-
-        let cls = 'booked';
-        if (d.status === 'Available') cls = 'available';
-        if (d.status === 'Heads-up') cls = 'headsup';
-        if (d.status === 'Booked') cls = 'booked';
-        dayBox.classList.add(cls);
-
-        const mainText = (d.status === 'Heads-up') ? 'Booked' : d.status;
-
-        let extra = '';
-
-        if (d.status === 'Heads-up') {
-          if (d.backTime) extra += `<span class="small">Back ${d.backTime}</span>`;
-          if (d.freeTime) extra += `<span class="small">Free ${d.freeTime}</span>`;
-        }
-
-        if (d.status === 'Booked' && d.bookedFrom && d.bookedUntil) {
-          extra += `<span class="small">From ${d.bookedFrom} → ${d.bookedUntil}</span>`;
-        }
-
-        dayBox.innerHTML = `
-          ${d.label || ''}<br/>
-          ${mainText}
-          ${extra}
-        `;
-
-        daysDiv.appendChild(dayBox);
-      });
-
-      card.appendChild(header);
-      card.appendChild(daysDiv);
-      app.appendChild(card);
-    });
-
-    const foot = document.createElement('div');
-    foot.className = 'muted';
-    foot.textContent = 'Last updated: ' + new Date().toLocaleString('en-AU');
-    app.appendChild(foot);
-
-  } catch (err) {
-    app.className = 'error';
-    app.textContent = 'Dashboard error:\n\n' + (err?.message || String(err));
+      const now = new Date();
+      updated.textContent = `Last updated: ${now.toLocaleString()}`;
+    }catch(err){
+      content.innerHTML = `<div class="error">${esc(err.message || "Network error")}</div>`;
+    }
   }
-}
 
-load();
+  refreshBtn.addEventListener("click", load);
+  load();
 </script>
 </body>
 </html>
