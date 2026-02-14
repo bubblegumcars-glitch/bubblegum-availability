@@ -16,6 +16,7 @@ function overlaps(aFrom, aTill, bFrom, bTill) { return aFrom < bTill && aTill > 
 
 const TZ_OFFSET_HOURS = Number(process.env.TIMEZONE_OFFSET_HOURS ?? 0);
 const TZ_OFFSET_MS = TZ_OFFSET_HOURS * 60 * 60 * 1000;
+
 const EARLY_CUTOFF_HOUR = Number(process.env.EARLY_RETURN_CUTOFF_HOUR ?? 6);
 const MIN_GAP_HOURS = Number(process.env.MIN_RENTABLE_GAP_HOURS ?? 4);
 const MIN_GAP_MS = MIN_GAP_HOURS * 60 * 60 * 1000;
@@ -25,17 +26,20 @@ function fmtTime(iso) {
   const b = new Date(t + TZ_OFFSET_MS);
   return `${pad2(b.getUTCHours())}:${pad2(b.getUTCMinutes())}`;
 }
+
 function hourInTz(iso) {
   const t = new Date(iso).getTime();
   const b = new Date(t + TZ_OFFSET_MS);
   return b.getUTCHours();
 }
+
 function fmtDayLabelFromAbs(fromAbs) {
   const b = new Date(fromAbs + TZ_OFFSET_MS);
   const weekdays = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
   const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   return `${weekdays[b.getUTCDay()]}, ${pad2(b.getUTCDate())} ${months[b.getUTCMonth()]}`;
 }
+
 function fmtDayTime(iso) {
   const t = new Date(iso).getTime();
   const b = new Date(t + TZ_OFFSET_MS);
@@ -44,6 +48,7 @@ function fmtDayTime(iso) {
   const day = `${weekdays[b.getUTCDay()]}, ${pad2(b.getUTCDate())} ${months[b.getUTCMonth()]}`;
   return `${day} ${fmtTime(iso)}`;
 }
+
 function dayBoundsAbs(dateObjInDisplayTz) {
   const y = dateObjInDisplayTz.getFullYear();
   const m = dateObjInDisplayTz.getMonth();
@@ -52,6 +57,7 @@ function dayBoundsAbs(dateObjInDisplayTz) {
   const tillUTC = Date.UTC(y, m, d + 1, 0, 0, 0) - TZ_OFFSET_MS;
   return { fromAbs: fromUTC, tillAbs: tillUTC };
 }
+
 function toISOWithOffset(absMs) {
   const b = new Date(absMs + TZ_OFFSET_MS);
   const y = b.getUTCFullYear();
@@ -80,6 +86,7 @@ function isAddonProduct(p) {
   if (a.tracking_type && a.tracking_type !== "trackable") return true;
   return false;
 }
+
 function isRealCar(p) {
   const a = p?.attributes || {};
   return (
@@ -92,6 +99,7 @@ function isRealCar(p) {
     !isAddonProduct(p)
   );
 }
+
 function sortCarsByYourOrder(cars) {
   const order = ["Blossom", "Bubbles", "Bean", "Breezy", "Betsy"];
   const idx = (name) => {
@@ -118,7 +126,7 @@ async function booqableFetch(baseUrl, token, path) {
   return json;
 }
 
-// First moment the car becomes free such that there is >= MIN_GAP_MS until next booking start.
+// Returns the first time the car becomes free such that there is >= MIN_GAP_MS until the next booking start.
 function computeRentableStartAbs(plannings, fromAbs) {
   const intervals = plannings
     .map(p => ({
@@ -128,9 +136,9 @@ function computeRentableStartAbs(plannings, fromAbs) {
     .filter(x => x.end > fromAbs)
     .sort((a, b) => a.start - b.start);
 
-  if (!intervals.length) return fromAbs; // nothing booked ahead => rentable now
+  if (!intervals.length) return fromAbs; // no bookings ahead => rentable now
 
-  // merge
+  // merge overlaps
   const busy = [];
   for (const i of intervals) {
     if (!busy.length) busy.push({ start: i.start, end: i.end });
@@ -141,10 +149,8 @@ function computeRentableStartAbs(plannings, fromAbs) {
     }
   }
 
-  // candidate = fromAbs (now)
+  // candidate = fromAbs; if inside a booking, jump to the booking end
   let candidate = fromAbs;
-
-  // if inside a busy interval, jump to its end
   for (const b of busy) {
     if (candidate >= b.start && candidate < b.end) {
       candidate = b.end;
@@ -157,14 +163,33 @@ function computeRentableStartAbs(plannings, fromAbs) {
   for (const b of busy) {
     if (candidate < b.start) {
       const gap = b.start - candidate;
-      if (gap >= MIN_GAP_MS) return candidate;   // rentable slot starts at candidate
-      candidate = b.end;                         // too small -> jump past booking
+      if (gap >= MIN_GAP_MS) return candidate;
+      candidate = b.end;
     } else if (candidate >= b.start && candidate < b.end) {
       candidate = b.end;
     }
   }
 
   return candidate; // after last booking
+}
+
+function findNextBookingStartAbs(plannings, fromAbs) {
+  let next = null;
+  for (const p of plannings) {
+    const s = new Date(p.reserved_from).getTime();
+    const e = new Date(p.reserved_till).getTime();
+    if (e <= fromAbs) continue;
+    if (s >= fromAbs && (next === null || s < next)) next = s;
+  }
+  return next;
+}
+
+function isBookedNow(plannings, nowAbs) {
+  return plannings.some(p => {
+    const s = new Date(p.reserved_from).getTime();
+    const e = new Date(p.reserved_till).getTime();
+    return s <= nowAbs && nowAbs < e;
+  });
 }
 
 export default async function handler(req, res) {
@@ -227,15 +252,25 @@ export default async function handler(req, res) {
         };
       }).filter(p => p.reserved_from && p.reserved_till);
 
-      // Rentable start from NOW (uses min-gap rule)
-      const rentableStartAbs = computeRentableStartAbs(plannings, nowAbs);
+      // ✅ Correct "Available now" meaning: rentable now (not booked now + no booking starting within MIN_GAP)
+      const bookedNow = isBookedNow(plannings, nowAbs);
+      const nextStartAbs = findNextBookingStartAbs(plannings, nowAbs);
 
-      // If rentable start is basically now (within 2 minutes), show Available now
-      let nextAvailable = null;
-      if (Math.abs(rentableStartAbs - nowAbs) <= 2 * 60 * 1000) {
-        nextAvailable = "Available now";
+      let nextAvailable;
+      if (bookedNow) {
+        // Currently inside a booking: next available is when we become rentable after it ends (gap-aware)
+        const rentableAbs = computeRentableStartAbs(plannings, nowAbs);
+        nextAvailable = fmtDayTime(new Date(rentableAbs).toISOString());
       } else {
-        nextAvailable = fmtDayTime(new Date(rentableStartAbs).toISOString());
+        // Not booked right now
+        const gapToNextStart = nextStartAbs === null ? Infinity : (nextStartAbs - nowAbs);
+        if (gapToNextStart >= MIN_GAP_MS) {
+          nextAvailable = "Available now";
+        } else {
+          // too close to next booking -> show realistic next rentable time
+          const rentableAbs = computeRentableStartAbs(plannings, nowAbs);
+          nextAvailable = fmtDayTime(new Date(rentableAbs).toISOString());
+        }
       }
 
       const dayStatuses = days.map(day => {
@@ -249,7 +284,7 @@ export default async function handler(req, res) {
           return { date: day.date, label: day.label, status: "Available" };
         }
 
-        // Any booking that STARTS today => RED with From/Until (this matches your cards)
+        // Any booking that STARTS today => RED with From/Until
         const startsToday = dayOverlaps
           .filter(p => {
             const aFrom = new Date(p.reserved_from).getTime();
