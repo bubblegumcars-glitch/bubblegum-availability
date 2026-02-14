@@ -1,238 +1,330 @@
 // api/availability.js
-// Bubblegum Cars staff dashboard
-// Fully timezone-safe using Booqable account settings
+// Bubblegum Cars staff availability (Booqable API v4)
+// Correctly maps plannings -> inventory_levels -> products
+// Uses /settings/current timezone + timezone_offset to interpret offset-less datetimes
 
 const RANGE_DAYS = 4;
 const MIN_RENTABLE_GAP_HOURS = 4;
 
-function json(res, status, body) {
+const MAX_PRODUCTS_PAGES = 5;
+const MAX_LEVELS_PAGES = 10;
+const MAX_PLANNINGS_PAGES = 10;
+
+const PER_PAGE = 100;
+
+// Light cache to reduce 429s (Vercel serverless may reuse runtime briefly)
+let _cache = { at: 0, payload: null };
+const CACHE_MS = 20_000;
+
+function sendJson(res, status, body, cacheSeconds = 0) {
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json");
+  if (cacheSeconds > 0) {
+    res.setHeader("Cache-Control", `s-maxage=${cacheSeconds}, stale-while-revalidate=60`);
+  } else {
+    res.setHeader("Cache-Control", "no-store");
+  }
   res.end(JSON.stringify(body));
+}
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
 }
 
 function hasOffset(str) {
   return /([zZ]|[+\-]\d{2}:\d{2})$/.test(str);
 }
 
-function parseDate(str, accountOffsetMinutes) {
+// Parse Booqable datetimes:
+// - if has offset/Z -> normal Date()
+// - if no offset -> interpret as "company local time", using timezone_offset (minutes)
+function parseBooqableDate(str, accountOffsetMinutes) {
   if (!str) return null;
 
   if (hasOffset(str)) {
-    return new Date(str);
+    const d = new Date(str);
+    return isNaN(d.getTime()) ? null : d;
   }
 
-  // No offset → interpret as account local time
-  const d = new Date(str + "Z");
-  return new Date(d.getTime() - accountOffsetMinutes * 60 * 1000);
+  // Treat naive string as local time in account timezone.
+  // Convert to UTC by subtracting the offset.
+  const assumedUtc = new Date(str + "Z");
+  if (isNaN(assumedUtc.getTime())) return null;
+
+  return new Date(assumedUtc.getTime() - accountOffsetMinutes * 60 * 1000);
 }
 
 function overlap(aStart, aEnd, bStart, bEnd) {
   return aStart < bEnd && bStart < aEnd;
 }
 
-function formatTime(date, timezone) {
-  return new Intl.DateTimeFormat("en-AU", {
-    timeZone: timezone,
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(date);
+// Build UTC ms for "local midnight" using fixed offset (timezone_offset minutes).
+// Brisbane has no DST, so this is safe for you.
+function localMidnightUtcMs(baseUtcMs, offsetMinutes, addDays) {
+  const offMs = offsetMinutes * 60 * 1000;
+  const localMs = baseUtcMs + offMs;
+
+  const local = new Date(localMs);
+  // Use UTC getters because we've shifted into "local" already
+  const y = local.getUTCFullYear();
+  const m = local.getUTCMonth();
+  const d = local.getUTCDate() + addDays;
+
+  const localMidnightMs = Date.UTC(y, m, d, 0, 0, 0, 0);
+  return localMidnightMs - offMs; // convert back to UTC
 }
 
-function formatLabel(date, timezone) {
+function fmtDayLabel(dateObj, timezone) {
   return new Intl.DateTimeFormat("en-AU", {
     timeZone: timezone,
     weekday: "short",
     day: "2-digit",
     month: "short",
-  }).format(date);
+  }).format(dateObj);
+}
+
+function fmtTime(dateObj, timezone) {
+  return new Intl.DateTimeFormat("en-AU", {
+    timeZone: timezone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(dateObj);
+}
+
+function fmtNextAvailable(dateObj, timezone) {
+  return `${fmtDayLabel(dateObj, timezone)} ${fmtTime(dateObj, timezone)}`;
 }
 
 export default async function handler(req, res) {
   try {
-    const company = process.env.BOOQABLE_COMPANY_SLUG;
-    const token = process.env.BOOQABLE_ACCESS_TOKEN;
-
-    if (!company || !token) {
-      return json(res, 500, { error: "Missing Booqable env vars" });
+    // Cache to reduce 429 from refresh spamming
+    const now = Date.now();
+    if (_cache.payload && now - _cache.at < CACHE_MS) {
+      return sendJson(res, 200, _cache.payload, 15);
     }
 
-    async function booqable(path) {
-      const r = await fetch(
-        `https://${company}.booqable.com/api/4${path}`,
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        }
-      );
+    const company = process.env.BOOQABLE_COMPANY_SLUG;
+    const token = process.env.BOOQABLE_ACCESS_TOKEN;
+    if (!company || !token) {
+      return sendJson(res, 500, { error: "Missing BOOQABLE_COMPANY_SLUG or BOOQABLE_ACCESS_TOKEN" });
+    }
+
+    async function booqable(path, attempt = 0) {
+      const url = `https://${company}.booqable.com/api/4${path}`;
+      const r = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (r.status === 429 && attempt < 4) {
+        // Exponential backoff
+        const wait = 400 * Math.pow(2, attempt);
+        await sleep(wait);
+        return booqable(path, attempt + 1);
+      }
+
       if (!r.ok) {
         const t = await r.text();
-        throw new Error(`Booqable ${r.status}: ${t}`);
+        throw new Error(`Booqable error ${r.status} for ${path} :: ${t}`);
       }
       return r.json();
     }
 
-    // 1️⃣ Get account timezone settings
+    // 1) Settings (timezone truth)
     const settings = await booqable("/settings/current");
-    const timezone =
-      settings?.data?.attributes?.defaults?.timezone || "UTC";
-    const offsetMinutes =
-      settings?.data?.attributes?.defaults?.timezone_offset || 0;
+    const timezone = settings?.data?.attributes?.defaults?.timezone || "UTC";
+    const offsetMinutes = settings?.data?.attributes?.defaults?.timezone_offset || 0;
 
-    const now = new Date();
-    const nowMs = now.getTime();
-
-    // 2️⃣ Get products
-    const productsRes = await booqable("/products?per_page=100");
-    const products = productsRes.data.filter(p => {
-      const a = p.attributes;
-      return (
-        a.product_type === "rental" &&
-        a.trackable === true &&
-        a.show_in_store === true &&
-        a.has_variations === false &&
-        a.variation === false
-      );
-    });
-
-    const productsById = new Map();
-    for (const p of products) {
-      productsById.set(p.id, p);
+    // 2) Products (cars only)
+    const products = [];
+    for (let page = 1; page <= MAX_PRODUCTS_PAGES; page++) {
+      const out = await booqable(`/products?per_page=${PER_PAGE}&page=${page}`);
+      const rows = out?.data || [];
+      products.push(...rows);
+      if (rows.length < PER_PAGE) break;
     }
 
-    // 3️⃣ Get plannings
-    const planningsRes = await booqable("/plannings?per_page=200");
-    const plannings = planningsRes.data;
+    const cars = products
+      .filter(p => {
+        const a = p.attributes || {};
+        return (
+          a.product_type === "rental" &&
+          a.trackable === true &&
+          a.show_in_store === true &&
+          a.has_variations === false &&
+          a.variation === false
+        );
+      })
+      .map(p => ({
+        id: p.id,
+        name: (p.attributes?.name || "").trim(),
+        slug: p.attributes?.slug,
+        photo_url: p.attributes?.photo_url,
+        buffer_before_s: p.attributes?.buffer_time_before || 0,
+        buffer_after_s: p.attributes?.buffer_time_after || 0,
+      }));
 
-    const intervals = new Map();
+    const carById = new Map(cars.map(c => [c.id, c]));
 
-    for (const p of plannings) {
-      const rel = p.relationships || {};
-      const productId =
-        rel.product?.data?.id ||
-        rel.item?.data?.id ||
-        p.attributes?.product_id ||
-        null;
-
-      if (!productId || !productsById.has(productId)) continue;
-
-      const startRaw = p.attributes.starts_at;
-      const endRaw = p.attributes.stops_at;
-
-      const startDate = parseDate(startRaw, offsetMinutes);
-      const endDate = parseDate(endRaw, offsetMinutes);
-
-      if (!startDate || !endDate) continue;
-
-      const product = productsById.get(productId);
-      const bufferBefore =
-        (product.attributes.buffer_time_before || 0) * 1000;
-      const bufferAfter =
-        (product.attributes.buffer_time_after || 0) * 1000;
-
-      const startMs = startDate.getTime() - bufferBefore;
-      const endMs = endDate.getTime() + bufferAfter;
-
-      if (!intervals.has(productId)) intervals.set(productId, []);
-      intervals.get(productId).push({
-        startMs,
-        endMs,
-        rawStart: startDate,
-        rawEnd: endDate,
-      });
+    // 3) Inventory levels: map inventory_level_id -> product_id
+    const invToProduct = new Map();
+    for (let page = 1; page <= MAX_LEVELS_PAGES; page++) {
+      const out = await booqable(`/inventory_levels?per_page=${PER_PAGE}&page=${page}`);
+      const rows = out?.data || [];
+      for (const lvl of rows) {
+        const invId = lvl.id;
+        const productId = lvl?.relationships?.product?.data?.id;
+        if (invId && productId && carById.has(productId)) {
+          invToProduct.set(invId, productId);
+        }
+      }
+      if (rows.length < PER_PAGE) break;
     }
 
-    for (const arr of intervals.values()) {
+    // 4) Plannings: build booked intervals per product via inventory_level relationship
+    const intervalsByProduct = new Map();
+    for (const c of cars) intervalsByProduct.set(c.id, []);
+
+    // optional: tighten to roughly the displayed window (+2 days buffer each side)
+    const baseUtcMs = Date.now();
+    const windowStartUtcMs = localMidnightUtcMs(baseUtcMs, offsetMinutes, 0) - 2 * 86400000;
+    const windowEndUtcMs = localMidnightUtcMs(baseUtcMs, offsetMinutes, RANGE_DAYS + 2);
+
+    for (let page = 1; page <= MAX_PLANNINGS_PAGES; page++) {
+      const out = await booqable(`/plannings?per_page=${PER_PAGE}&page=${page}`);
+      const rows = out?.data || [];
+
+      for (const pl of rows) {
+        const invId = pl?.relationships?.inventory_level?.data?.id;
+        if (!invId) continue;
+
+        const productId = invToProduct.get(invId);
+        if (!productId) continue;
+
+        const startsRaw = pl?.attributes?.starts_at;
+        const stopsRaw = pl?.attributes?.stops_at;
+
+        const starts = parseBooqableDate(startsRaw, offsetMinutes);
+        const stops = parseBooqableDate(stopsRaw, offsetMinutes);
+        if (!starts || !stops) continue;
+
+        let startMs = starts.getTime();
+        let endMs = stops.getTime();
+
+        // Skip plannings far outside our window (helps performance)
+        if (!overlap(startMs, endMs, windowStartUtcMs, windowEndUtcMs)) continue;
+
+        const car = carById.get(productId);
+        const bufBeforeMs = (car.buffer_before_s || 0) * 1000;
+        const bufAfterMs = (car.buffer_after_s || 0) * 1000;
+
+        startMs -= bufBeforeMs;
+        endMs += bufAfterMs;
+
+        intervalsByProduct.get(productId).push({
+          startMs,
+          endMs,
+          startsRaw: starts, // for display
+          stopsRaw: stops,
+        });
+      }
+
+      if (rows.length < PER_PAGE) break;
+    }
+
+    // sort intervals
+    for (const arr of intervalsByProduct.values()) {
       arr.sort((a, b) => a.startMs - b.startMs);
     }
 
-    // 4️⃣ Build days
+    // 5) Build the days array (local midnights)
     const days = [];
     for (let i = 0; i < RANGE_DAYS; i++) {
-      const d = new Date(now);
-      d.setDate(d.getDate() + i);
-      days.push(d);
+      const startUtcMs = localMidnightUtcMs(baseUtcMs, offsetMinutes, i);
+      const endUtcMs = startUtcMs + 86400000;
+      days.push({
+        startUtcMs,
+        endUtcMs,
+        label: fmtDayLabel(new Date(startUtcMs), timezone),
+      });
     }
 
-    const carsOut = [];
+    // 6) Calculate per-car tiles + nextAvailable
+    const nowMs = Date.now();
+    const outCars = [];
 
-    for (const p of products) {
-      const pid = p.id;
-      const ivals = intervals.get(pid) || [];
+    for (const car of cars) {
+      const ivals = intervalsByProduct.get(car.id) || [];
 
-      // Available now
-      const bookedNow = ivals.some(
-        iv => nowMs >= iv.startMs && nowMs < iv.endMs
-      );
+      const bookedNow = ivals.some(iv => nowMs >= iv.startMs && nowMs < iv.endMs);
 
-      let nextAvailable = null;
+      // Next available (respect 4-hour minimum rentable gap)
+      let nextAvailable = "Available now";
+      if (bookedNow) {
+        nextAvailable = null;
 
-      if (!bookedNow) {
-        nextAvailable = "Available now";
-      } else {
-        for (const iv of ivals) {
+        for (let i = 0; i < ivals.length; i++) {
+          const iv = ivals[i];
           if (nowMs < iv.endMs) {
-            const gapMs =
-              ivals.find(x => x.startMs > iv.endMs)?.startMs -
-              iv.endMs;
+            const nextStart = ivals[i + 1]?.startMs ?? null;
+            const gapMs = nextStart ? (nextStart - iv.endMs) : null;
 
-            if (!gapMs || gapMs >= MIN_RENTABLE_GAP_HOURS * 3600000) {
-              nextAvailable = formatLabel(
-                new Date(iv.endMs),
-                timezone
-              ) + " " +
-                formatTime(new Date(iv.endMs), timezone);
+            if (gapMs === null || gapMs >= MIN_RENTABLE_GAP_HOURS * 3600000) {
+              nextAvailable = fmtNextAvailable(new Date(iv.endMs), timezone);
               break;
             }
           }
         }
+
+        if (!nextAvailable) {
+          // fallback: last interval end
+          const last = ivals[ivals.length - 1];
+          nextAvailable = last ? fmtNextAvailable(new Date(last.endMs), timezone) : "Unknown";
+        }
       }
 
-      const dayTiles = days.map(d => {
-        const dayStart = new Date(
-          formatLabel(d, timezone)
-        );
-        const startMs = new Date(
-          d.toLocaleString("en-US", { timeZone: timezone })
-        ).setHours(0, 0, 0, 0);
-        const endMs = startMs + 86400000;
+      const tiles = days.map(d => {
+        const overlaps = ivals.filter(iv => overlap(iv.startMs, iv.endMs, d.startUtcMs, d.endUtcMs));
 
-        const overlapsToday = ivals.filter(iv =>
-          overlap(iv.startMs, iv.endMs, startMs, endMs)
-        );
-
-        if (!overlapsToday.length) {
-          return {
-            date: formatLabel(d, timezone),
-            status: "Available",
-          };
+        if (overlaps.length === 0) {
+          return { label: d.label, status: "Available" };
         }
 
-        const first = overlapsToday[0];
+        // If there are multiple overlaps in a day, we show the first for now (simple).
+        const first = overlaps[0];
 
         return {
-          date: formatLabel(d, timezone),
+          label: d.label,
           status: "Booked",
-          bookedFrom: formatTime(first.rawStart, timezone),
-          bookedUntil: formatTime(first.rawEnd, timezone),
+          bookedFrom: fmtTime(first.startsRaw, timezone),
+          bookedUntil: fmtTime(first.stopsRaw, timezone),
         };
       });
 
-      carsOut.push({
-        id: pid,
-        name: p.attributes.name.trim(),
-        photo_url: p.attributes.photo_url,
+      outCars.push({
+        id: car.id,
+        name: car.name,
+        slug: car.slug,
+        photo_url: car.photo_url,
         nextAvailable,
-        days: dayTiles,
+        days: tiles,
       });
     }
 
-    return json(res, 200, {
+    const payload = {
       company,
       timezone,
-      cars: carsOut,
-    });
+      timezone_offset_minutes: offsetMinutes,
+      rangeDays: RANGE_DAYS,
+      minRentableGapHours: MIN_RENTABLE_GAP_HOURS,
+      cars: outCars,
+      note: "Uses /settings/current + /inventory_levels + /plannings. No manual offset guessing.",
+    };
+
+    _cache = { at: Date.now(), payload };
+
+    return sendJson(res, 200, payload, 15);
   } catch (e) {
-    return json(res, 500, { error: e.message });
+    return sendJson(res, 500, { error: e.message });
   }
 }
