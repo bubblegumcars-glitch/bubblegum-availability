@@ -21,33 +21,56 @@ const EARLY_CUTOFF_HOUR = Number(process.env.EARLY_RETURN_CUTOFF_HOUR ?? 6);
 const MIN_GAP_HOURS = Number(process.env.MIN_RENTABLE_GAP_HOURS ?? 4);
 const MIN_GAP_MS = MIN_GAP_HOURS * 60 * 60 * 1000;
 
-function tzSuffix() {
-  const sign = TZ_OFFSET_HOURS >= 0 ? "+" : "-";
-  const off = Math.abs(TZ_OFFSET_HOURS);
-  const hh = pad2(Math.floor(off));
-  const mm = pad2(Math.round((off - Math.floor(off)) * 60));
-  return `${sign}${hh}:${mm}`;
+// ✅ Robust: detect explicit timezone in ISO string
+function hasExplicitTimezone(s) {
+  // Handles:
+  //  - 2026-02-14T09:00:00Z
+  //  - 2026-02-14T09:00:00+10:00
+  //  - 2026-02-14T09:00:00+1000
+  //  - ...with optional milliseconds
+  return /([zZ]|[+\-]\d{2}:\d{2}|[+\-]\d{4})$/.test(s);
 }
 
-// ✅ KEY FIX:
-// - If timestamp includes a timezone: trust it.
-// - If timestamp has NO timezone: treat as Brisbane local time by appending +10:00 (or whatever offset you set).
+// ✅ Robust: parse naive "local" timestamps ourselves as Brisbane local time
+// Accepts:
+//  - YYYY-MM-DDTHH:MM
+//  - YYYY-MM-DDTHH:MM:SS
+//  - YYYY-MM-DD HH:MM
+//  - YYYY-MM-DD HH:MM:SS
+function parseNaiveLocalAsAbs(isoLike) {
+  const s = String(isoLike).trim().replace(" ", "T");
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?$/);
+  if (!m) return null;
+
+  const y = Number(m[1]);
+  const mo = Number(m[2]) - 1;
+  const d = Number(m[3]);
+  const hh = Number(m[4]);
+  const mm = Number(m[5]);
+  const ss = m[6] ? Number(m[6]) : 0;
+
+  // This is Brisbane local time => convert to absolute UTC:
+  // UTC = local - offset
+  return Date.UTC(y, mo, d, hh, mm, ss) - TZ_OFFSET_MS;
+}
+
+// ✅ Main parser:
+// - If explicit TZ present => Date.parse ok
+// - If no TZ => parse as Brisbane local time via parseNaiveLocalAsAbs
 function parseBooqableToAbs(isoLike) {
   if (!isoLike) return null;
   const s = String(isoLike).trim();
 
-  const hasTZ = /[zZ]$|[+\-]\d\d:\d\d$|[+\-]\d\d\d\d$/.test(s);
-
-  if (hasTZ) {
+  if (hasExplicitTimezone(s)) {
     const t = Date.parse(s);
     return Number.isFinite(t) ? t : null;
   }
 
-  // Interpret "naive" timestamps as Brisbane local time
-  const t = Date.parse(`${s}${tzSuffix()}`);
-  return Number.isFinite(t) ? t : null;
+  // Naive local timestamp: treat as Brisbane local
+  return parseNaiveLocalAsAbs(s);
 }
 
+// Convert absolute ms => Brisbane clock time HH:MM
 function fmtTimeFromAbs(absMs) {
   const b = new Date(absMs + TZ_OFFSET_MS);
   return `${pad2(b.getUTCHours())}:${pad2(b.getUTCMinutes())}`;
@@ -81,7 +104,7 @@ function fmtDayTimeFromAbs(absMs) {
   return `${day} ${pad2(b.getUTCHours())}:${pad2(b.getUTCMinutes())}`;
 }
 
-// Build Brisbane-midnight day windows in absolute time
+// Brisbane-midnight day windows in absolute time
 function dayBoundsAbs(dateObjInDisplayTz) {
   const y = dateObjInDisplayTz.getFullYear();
   const m = dateObjInDisplayTz.getMonth();
@@ -89,6 +112,14 @@ function dayBoundsAbs(dateObjInDisplayTz) {
   const fromUTC = Date.UTC(y, m, d, 0, 0, 0) - TZ_OFFSET_MS;
   const tillUTC = Date.UTC(y, m, d + 1, 0, 0, 0) - TZ_OFFSET_MS;
   return { fromAbs: fromUTC, tillAbs: tillUTC };
+}
+
+function tzSuffix() {
+  const sign = TZ_OFFSET_HOURS >= 0 ? "+" : "-";
+  const off = Math.abs(TZ_OFFSET_HOURS);
+  const hh = pad2(Math.floor(off));
+  const mm = pad2(Math.round((off - Math.floor(off)) * 60));
+  return `${sign}${hh}:${mm}`;
 }
 
 function toISOWithOffset(absMs) {
@@ -178,7 +209,6 @@ function findNextBookingStartAbs(plannings, fromAbs) {
 }
 
 // Find first rentable time >= fromAbs where the gap before the next booking is >= MIN_GAP_MS.
-// If currently inside a booking, start at booking end, then scan forward.
 function computeRentableStartAbs(plannings, fromAbs) {
   const intervals = plannings
     .map(p => ({
