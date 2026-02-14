@@ -4,7 +4,7 @@
 // ENV (Vercel):
 // - BOOQABLE_ACCESS_TOKEN
 // - BOOQABLE_COMPANY_SLUG=bubblegum-cars
-// - TIMEZONE_OFFSET_HOURS=0
+// - TIMEZONE_OFFSET_HOURS=10   <-- IMPORTANT (Brisbane)
 // Optional:
 // - EARLY_RETURN_CUTOFF_HOUR=6
 // - MIN_RENTABLE_GAP_HOURS=4
@@ -14,21 +14,48 @@ function addDays(dateObj, days) { const d = new Date(dateObj); d.setDate(d.getDa
 function ymd(date) { return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`; }
 function overlaps(aFrom, aTill, bFrom, bTill) { return aFrom < bTill && aTill > bFrom; }
 
-const TZ_OFFSET_HOURS = Number(process.env.TIMEZONE_OFFSET_HOURS ?? 0);
+const TZ_OFFSET_HOURS = Number(process.env.TIMEZONE_OFFSET_HOURS ?? 10); // default Brisbane
 const TZ_OFFSET_MS = TZ_OFFSET_HOURS * 60 * 60 * 1000;
 
 const EARLY_CUTOFF_HOUR = Number(process.env.EARLY_RETURN_CUTOFF_HOUR ?? 6);
 const MIN_GAP_HOURS = Number(process.env.MIN_RENTABLE_GAP_HOURS ?? 4);
 const MIN_GAP_MS = MIN_GAP_HOURS * 60 * 60 * 1000;
 
-function fmtTime(iso) {
-  const t = new Date(iso).getTime();
-  const b = new Date(t + TZ_OFFSET_MS);
+function tzSuffix() {
+  const sign = TZ_OFFSET_HOURS >= 0 ? "+" : "-";
+  const off = Math.abs(TZ_OFFSET_HOURS);
+  const hh = pad2(Math.floor(off));
+  const mm = pad2(Math.round((off - Math.floor(off)) * 60));
+  return `${sign}${hh}:${mm}`;
+}
+
+// ✅ If Booqable returns timestamps without timezone, force Brisbane offset
+function parseBooqableToAbs(isoLike) {
+  if (!isoLike) return null;
+  const s = String(isoLike).trim();
+
+  // Has timezone already (Z or +hh:mm / -hh:mm)
+  const hasTZ = /[zZ]$|[+\-]\d\d:\d\d$|[+\-]\d\d\d\d$/.test(s);
+  const normalized = hasTZ ? s : `${s}${tzSuffix()}`;
+
+  const t = Date.parse(normalized);
+  return Number.isFinite(t) ? t : null;
+}
+
+function fmtTimeFromAbs(absMs) {
+  const b = new Date(absMs + TZ_OFFSET_MS);
   return `${pad2(b.getUTCHours())}:${pad2(b.getUTCMinutes())}`;
 }
 
-function hourInTz(iso) {
-  const t = new Date(iso).getTime();
+function fmtTime(isoLike) {
+  const t = parseBooqableToAbs(isoLike);
+  if (t === null) return "";
+  return fmtTimeFromAbs(t);
+}
+
+function hourInTz(isoLike) {
+  const t = parseBooqableToAbs(isoLike);
+  if (t === null) return 0;
   const b = new Date(t + TZ_OFFSET_MS);
   return b.getUTCHours();
 }
@@ -40,13 +67,12 @@ function fmtDayLabelFromAbs(fromAbs) {
   return `${weekdays[b.getUTCDay()]}, ${pad2(b.getUTCDate())} ${months[b.getUTCMonth()]}`;
 }
 
-function fmtDayTime(iso) {
-  const t = new Date(iso).getTime();
-  const b = new Date(t + TZ_OFFSET_MS);
+function fmtDayTimeFromAbs(absMs) {
+  const b = new Date(absMs + TZ_OFFSET_MS);
   const weekdays = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
   const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   const day = `${weekdays[b.getUTCDay()]}, ${pad2(b.getUTCDate())} ${months[b.getUTCMonth()]}`;
-  return `${day} ${fmtTime(iso)}`;
+  return `${day} ${pad2(b.getUTCHours())}:${pad2(b.getUTCMinutes())}`;
 }
 
 function dayBoundsAbs(dateObjInDisplayTz) {
@@ -66,10 +92,7 @@ function toISOWithOffset(absMs) {
   const hh = pad2(b.getUTCHours());
   const mi = pad2(b.getUTCMinutes());
   const ss = pad2(b.getUTCSeconds());
-  const sign = TZ_OFFSET_HOURS >= 0 ? "+" : "-";
-  const off = Math.abs(TZ_OFFSET_HOURS);
-  const offHH = pad2(Math.floor(off));
-  return `${y}-${mo}-${da}T${hh}:${mi}:${ss}${sign}${offHH}:00`;
+  return `${y}-${mo}-${da}T${hh}:${mi}:${ss}${tzSuffix()}`;
 }
 
 function isAddonProduct(p) {
@@ -126,19 +149,17 @@ async function booqableFetch(baseUrl, token, path) {
   return json;
 }
 
-// Returns the first time the car becomes free such that there is >= MIN_GAP_MS until the next booking start.
 function computeRentableStartAbs(plannings, fromAbs) {
   const intervals = plannings
     .map(p => ({
-      start: new Date(p.reserved_from).getTime(),
-      end: new Date(p.reserved_till).getTime(),
+      start: parseBooqableToAbs(p.reserved_from),
+      end: parseBooqableToAbs(p.reserved_till),
     }))
-    .filter(x => x.end > fromAbs)
+    .filter(x => x.start !== null && x.end !== null && x.end > fromAbs)
     .sort((a, b) => a.start - b.start);
 
-  if (!intervals.length) return fromAbs; // no bookings ahead => rentable now
+  if (!intervals.length) return fromAbs;
 
-  // merge overlaps
   const busy = [];
   for (const i of intervals) {
     if (!busy.length) busy.push({ start: i.start, end: i.end });
@@ -149,8 +170,8 @@ function computeRentableStartAbs(plannings, fromAbs) {
     }
   }
 
-  // candidate = fromAbs; if inside a booking, jump to the booking end
   let candidate = fromAbs;
+
   for (const b of busy) {
     if (candidate >= b.start && candidate < b.end) {
       candidate = b.end;
@@ -159,7 +180,6 @@ function computeRentableStartAbs(plannings, fromAbs) {
     if (candidate < b.start) break;
   }
 
-  // scan gaps
   for (const b of busy) {
     if (candidate < b.start) {
       const gap = b.start - candidate;
@@ -170,14 +190,15 @@ function computeRentableStartAbs(plannings, fromAbs) {
     }
   }
 
-  return candidate; // after last booking
+  return candidate;
 }
 
 function findNextBookingStartAbs(plannings, fromAbs) {
   let next = null;
   for (const p of plannings) {
-    const s = new Date(p.reserved_from).getTime();
-    const e = new Date(p.reserved_till).getTime();
+    const s = parseBooqableToAbs(p.reserved_from);
+    const e = parseBooqableToAbs(p.reserved_till);
+    if (s === null || e === null) continue;
     if (e <= fromAbs) continue;
     if (s >= fromAbs && (next === null || s < next)) next = s;
   }
@@ -186,8 +207,9 @@ function findNextBookingStartAbs(plannings, fromAbs) {
 
 function isBookedNow(plannings, nowAbs) {
   return plannings.some(p => {
-    const s = new Date(p.reserved_from).getTime();
-    const e = new Date(p.reserved_till).getTime();
+    const s = parseBooqableToAbs(p.reserved_from);
+    const e = parseBooqableToAbs(p.reserved_till);
+    if (s === null || e === null) return false;
     return s <= nowAbs && nowAbs < e;
   });
 }
@@ -252,31 +274,28 @@ export default async function handler(req, res) {
         };
       }).filter(p => p.reserved_from && p.reserved_till);
 
-      // ✅ Correct "Available now" meaning: rentable now (not booked now + no booking starting within MIN_GAP)
       const bookedNow = isBookedNow(plannings, nowAbs);
       const nextStartAbs = findNextBookingStartAbs(plannings, nowAbs);
 
       let nextAvailable;
       if (bookedNow) {
-        // Currently inside a booking: next available is when we become rentable after it ends (gap-aware)
         const rentableAbs = computeRentableStartAbs(plannings, nowAbs);
-        nextAvailable = fmtDayTime(new Date(rentableAbs).toISOString());
+        nextAvailable = fmtDayTimeFromAbs(rentableAbs);
       } else {
-        // Not booked right now
         const gapToNextStart = nextStartAbs === null ? Infinity : (nextStartAbs - nowAbs);
         if (gapToNextStart >= MIN_GAP_MS) {
           nextAvailable = "Available now";
         } else {
-          // too close to next booking -> show realistic next rentable time
           const rentableAbs = computeRentableStartAbs(plannings, nowAbs);
-          nextAvailable = fmtDayTime(new Date(rentableAbs).toISOString());
+          nextAvailable = fmtDayTimeFromAbs(rentableAbs);
         }
       }
 
       const dayStatuses = days.map(day => {
         const dayOverlaps = plannings.filter(p => {
-          const aFrom = new Date(p.reserved_from).getTime();
-          const aTill = new Date(p.reserved_till).getTime();
+          const aFrom = parseBooqableToAbs(p.reserved_from);
+          const aTill = parseBooqableToAbs(p.reserved_till);
+          if (aFrom === null || aTill === null) return false;
           return overlaps(aFrom, aTill, day.fromAbs, day.tillAbs);
         });
 
@@ -284,13 +303,12 @@ export default async function handler(req, res) {
           return { date: day.date, label: day.label, status: "Available" };
         }
 
-        // Any booking that STARTS today => RED with From/Until
         const startsToday = dayOverlaps
           .filter(p => {
-            const aFrom = new Date(p.reserved_from).getTime();
-            return aFrom >= day.fromAbs && aFrom < day.tillAbs;
+            const aFrom = parseBooqableToAbs(p.reserved_from);
+            return aFrom !== null && aFrom >= day.fromAbs && aFrom < day.tillAbs;
           })
-          .sort((a, b) => new Date(a.reserved_from) - new Date(b.reserved_from));
+          .sort((a, b) => parseBooqableToAbs(a.reserved_from) - parseBooqableToAbs(b.reserved_from));
 
         if (startsToday.length) {
           const p = startsToday[0];
@@ -306,14 +324,13 @@ export default async function handler(req, res) {
           };
         }
 
-        // Carry-over return (ORANGE)
         const carryReturn = dayOverlaps
           .filter(p => {
-            const aFrom = new Date(p.reserved_from).getTime();
-            const aTill = new Date(p.reserved_till).getTime();
-            return aFrom < day.fromAbs && aTill <= day.tillAbs;
+            const aFrom = parseBooqableToAbs(p.reserved_from);
+            const aTill = parseBooqableToAbs(p.reserved_till);
+            return aFrom !== null && aTill !== null && aFrom < day.fromAbs && aTill <= day.tillAbs;
           })
-          .sort((a, b) => new Date(a.reserved_till) - new Date(b.reserved_till));
+          .sort((a, b) => parseBooqableToAbs(a.reserved_till) - parseBooqableToAbs(b.reserved_till));
 
         if (carryReturn.length) {
           const p = carryReturn[0];
