@@ -4,7 +4,7 @@
 // ENV (Vercel):
 // - BOOQABLE_ACCESS_TOKEN
 // - BOOQABLE_COMPANY_SLUG=bubblegum-cars
-// - TIMEZONE_OFFSET_HOURS=10   <-- IMPORTANT (Brisbane)
+// - TIMEZONE_OFFSET_HOURS=10   <-- Brisbane display
 // Optional:
 // - EARLY_RETURN_CUTOFF_HOUR=6
 // - MIN_RENTABLE_GAP_HOURS=4
@@ -14,7 +14,7 @@ function addDays(dateObj, days) { const d = new Date(dateObj); d.setDate(d.getDa
 function ymd(date) { return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`; }
 function overlaps(aFrom, aTill, bFrom, bTill) { return aFrom < bTill && aTill > bFrom; }
 
-const TZ_OFFSET_HOURS = Number(process.env.TIMEZONE_OFFSET_HOURS ?? 10); // default Brisbane
+const TZ_OFFSET_HOURS = Number(process.env.TIMEZONE_OFFSET_HOURS ?? 10); // Brisbane display
 const TZ_OFFSET_MS = TZ_OFFSET_HOURS * 60 * 60 * 1000;
 
 const EARLY_CUTOFF_HOUR = Number(process.env.EARLY_RETURN_CUTOFF_HOUR ?? 6);
@@ -29,14 +29,15 @@ function tzSuffix() {
   return `${sign}${hh}:${mm}`;
 }
 
-// ✅ If Booqable returns timestamps without timezone, force Brisbane offset
+// ✅ IMPORTANT FIX:
+// If Booqable returns timestamps WITHOUT timezone, they are UTC but missing the 'Z'.
+// So we force UTC for naive timestamps.
 function parseBooqableToAbs(isoLike) {
   if (!isoLike) return null;
   const s = String(isoLike).trim();
 
-  // Has timezone already (Z or +hh:mm / -hh:mm)
   const hasTZ = /[zZ]$|[+\-]\d\d:\d\d$|[+\-]\d\d\d\d$/.test(s);
-  const normalized = hasTZ ? s : `${s}${tzSuffix()}`;
+  const normalized = hasTZ ? s : `${s}Z`; // <-- treat naive as UTC
 
   const t = Date.parse(normalized);
   return Number.isFinite(t) ? t : null;
