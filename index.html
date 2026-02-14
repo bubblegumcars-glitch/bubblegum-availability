@@ -22,131 +22,33 @@
       color:var(--text);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
     }
-    header{
-      padding:22px 16px 8px;
-      text-align:center;
-    }
-    h1{
-      margin:0;
-      font-size:34px;
-      font-weight:800;
-      letter-spacing:.2px;
-    }
-    .controls{
-      display:flex;
-      justify-content:center;
-      gap:10px;
-      padding:10px 16px 14px;
-    }
-    button{
-      border:none;
-      background:#e9eaee;
-      padding:10px 16px;
-      border-radius:10px;
-      font-weight:700;
-      cursor:pointer;
-    }
+    header{ padding:22px 16px 8px; text-align:center; }
+    h1{ margin:0; font-size:34px; font-weight:800; letter-spacing:.2px; }
+    .controls{ display:flex; justify-content:center; gap:10px; padding:10px 16px 14px; }
+    button{ border:none; background:#e9eaee; padding:10px 16px; border-radius:10px; font-weight:700; cursor:pointer; }
     button:active{transform:scale(.99)}
-    .wrap{
-      max-width:1180px;
-      margin:0 auto;
-      padding:0 14px 28px;
-    }
-    .car{
-      background:var(--card);
-      border-radius:16px;
-      box-shadow:var(--shadow);
-      margin:14px 0;
-      overflow:hidden;
-    }
-    .carTop{
-      display:flex;
-      gap:16px;
-      padding:16px;
-      align-items:center;
-    }
-    .thumb{
-      width:110px;
-      height:70px;
-      border-radius:10px;
-      object-fit:cover;
-      background:#ddd;
-      flex:0 0 auto;
-    }
-    .meta{
-      flex:1;
-      min-width:0;
-    }
-    .name{
-      font-size:34px;
-      font-weight:800;
-      margin:0 0 4px;
-      line-height:1.05;
-    }
-    .next{
-      text-align:right;
-      min-width:160px;
-    }
-    .next .label{
-      color:#888;
-      font-weight:800;
-      font-size:18px;
-      line-height:1.1;
-    }
-    .next .value{
-      font-weight:900;
-      font-size:24px;
-      line-height:1.1;
-    }
-    .days{
-      display:grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap:10px;
-      padding:0 16px 16px;
-    }
+    .wrap{ max-width:1180px; margin:0 auto; padding:0 14px 28px; }
+    .car{ background:var(--card); border-radius:16px; box-shadow:var(--shadow); margin:14px 0; overflow:hidden; }
+    .carTop{ display:flex; gap:16px; padding:16px; align-items:center; }
+    .thumb{ width:110px; height:70px; border-radius:10px; object-fit:cover; background:#ddd; flex:0 0 auto; }
+    .meta{ flex:1; min-width:0; }
+    .name{ font-size:34px; font-weight:800; margin:0 0 4px; line-height:1.05; }
+    .next{ text-align:right; min-width:160px; }
+    .next .label{ color:#888; font-weight:800; font-size:18px; line-height:1.1; }
+    .next .value{ font-weight:900; font-size:24px; line-height:1.1; }
+    .days{ display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:10px; padding:0 16px 16px; }
     .day{
-      border-radius:14px;
-      padding:12px 10px;
-      color:#fff;
-      font-weight:900;
-      text-align:center;
-      line-height:1.1;
-      min-height:86px;
-      display:flex;
-      flex-direction:column;
-      justify-content:center;
+      border-radius:14px; padding:12px 10px; color:#fff; font-weight:900; text-align:center;
+      line-height:1.1; min-height:86px; display:flex; flex-direction:column; justify-content:center;
     }
-    .day .top{
-      font-size:22px;
-      margin-bottom:4px;
-    }
-    .day .mid{
-      font-size:22px;
-      margin-bottom:4px;
-    }
-    .day .small{
-      font-size:18px;
-      font-weight:800;
-      opacity:.95;
-    }
+    .day .top{ font-size:22px; margin-bottom:4px; }
+    .day .mid{ font-size:22px; margin-bottom:4px; }
+    .day .small{ font-size:18px; font-weight:800; opacity:.95; }
     .green{ background:var(--green); }
     .red{ background:var(--red); }
     .orange{ background:var(--orange); }
-    .footer{
-      text-align:center;
-      color:var(--muted);
-      font-weight:700;
-      padding:12px 0 4px;
-    }
-    .error{
-      background:#fff;
-      border-radius:14px;
-      box-shadow:var(--shadow);
-      padding:14px;
-      margin:14px 0;
-      color:#b00020;
-      font-weight:800;
-    }
+    .footer{ text-align:center; color:var(--muted); font-weight:700; padding:12px 0 4px; }
+    .error{ background:#fff; border-radius:14px; box-shadow:var(--shadow); padding:14px; margin:14px 0; color:#b00020; font-weight:800; }
     @media (max-width: 860px){
       .name{font-size:28px}
       .days{grid-template-columns: repeat(2, minmax(0, 1fr));}
@@ -182,7 +84,7 @@
   function statusClass(status){
     if (status === "Available") return "green";
     if (status === "Booked") return "red";
-    return "orange"; // Heads-up
+    return "orange";
   }
 
   function renderDay(d){
@@ -225,7 +127,6 @@
     const name = esc(car.name);
     const img = esc(car.photo_url || "");
     const next = esc(car.nextAvailable || "");
-
     const daysHtml = (car.days || []).slice(0,4).map(renderDay).join("");
 
     return `
