@@ -323,6 +323,11 @@ export default async function handler(req, res) {
 
     function resolveProductIdFromPlanning(pl) {
       const rel = pl?.relationships || {};
+      const attrs = pl?.attributes || {};
+
+      // CRITICAL: In Booqable v4, item_id in planning attributes IS the product ID
+      // The "item" relationship just returns the product with type "products"
+      if (attrs.item_id) return attrs.item_id;
 
       // A) Direct product relationship
       if (rel.product?.data?.id) return rel.product.data.id;
