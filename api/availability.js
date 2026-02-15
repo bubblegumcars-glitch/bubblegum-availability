@@ -57,23 +57,17 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function hasOffset(str) {
-  return /([zZ]|[+\-]\d{2}:\d{2})$/.test(str);
-}
-
 // Parse Booqable datetime strings.
-// - If offset/Z present -> Date(str)
-// - If no offset -> treat as company-local, convert to UTC using timezone_offset minutes
+// IMPORTANT: Booqable sends times with "+00:00" that are actually LOCAL times,
+// not UTC times. We must treat ALL timestamps as naive local times.
 function parseBooqableDate(str, accountOffsetMinutes) {
   if (!str) return null;
 
-  if (hasOffset(str)) {
-    const d = new Date(str);
-    return isNaN(d.getTime()) ? null : d;
-  }
-
-  // Interpret naive string as local time, then convert to UTC by subtracting offset
-  const assumedUtc = new Date(str + "Z");
+  // Strip any offset markers (+00:00, Z, etc) - Booqable times are always local
+  const naive = str.replace(/([zZ]|[+\-]\d{2}:\d{2})$/, "");
+  
+  // Interpret as local time, then convert to UTC by subtracting offset
+  const assumedUtc = new Date(naive + "Z");
   if (isNaN(assumedUtc.getTime())) return null;
   return new Date(assumedUtc.getTime() - accountOffsetMinutes * 60 * 1000);
 }
