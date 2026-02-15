@@ -116,6 +116,40 @@ function fmtNextAvailable(dateObj, timezone) {
   return `${fmtDayLabel(dateObj, timezone)} ${fmtTime(dateObj, timezone)}`;
 }
 
+// Round late evening/early morning returns to 9am
+// If return is between 6pm and 8:45am, round to 9am
+function roundToBusinessHours(utcMs, timezone, offsetMinutes) {
+  // Convert UTC ms to local time for checking
+  const localMs = utcMs + (offsetMinutes * 60 * 1000);
+  const localDate = new Date(localMs);
+  const hours = localDate.getUTCHours();
+  const minutes = localDate.getUTCMinutes();
+  
+  // Check if between 18:00 (6pm) and 08:45 (8:45am)
+  const isLateEvening = hours >= 18; // 6pm to midnight
+  const isEarlyMorning = hours < 8 || (hours === 8 && minutes <= 45); // midnight to 8:45am
+  
+  if (isLateEvening || isEarlyMorning) {
+    // Get the date in local timezone
+    const year = localDate.getUTCFullYear();
+    const month = localDate.getUTCMonth();
+    const day = localDate.getUTCDate();
+    
+    // If it's late evening (6pm-midnight), move to next day at 9am
+    // If it's early morning (midnight-8:45am), use same day at 9am
+    const targetDay = isLateEvening ? day + 1 : day;
+    
+    // Create 9am local time on the target day
+    const nineAmLocal = Date.UTC(year, month, targetDay, 9, 0, 0, 0);
+    
+    // Convert back to UTC
+    return nineAmLocal - (offsetMinutes * 60 * 1000);
+  }
+  
+  // Return as-is if during business hours
+  return utcMs;
+}
+
 function addPaging(pathWithMaybeQuery, pageNumber) {
   const join = pathWithMaybeQuery.includes("?") ? "&" : "?";
   return `${pathWithMaybeQuery}${join}page[size]=${PAGE_SIZE}&page[number]=${pageNumber}`;
@@ -472,7 +506,9 @@ export default async function handler(req, res) {
             const gapMs = nextStart ? nextStart - iv.endMs : null;
 
             if (gapMs === null || gapMs >= minRentableGapHours * 3600000) {
-              nextAvailable = fmtNextAvailable(new Date(iv.endMs), timezone);
+              // Round late returns to 9am next business day
+              const roundedEndMs = roundToBusinessHours(iv.endMs, timezone, offsetMinutes);
+              nextAvailable = fmtNextAvailable(new Date(roundedEndMs), timezone);
               break;
             }
           }
@@ -480,7 +516,12 @@ export default async function handler(req, res) {
 
         if (!nextAvailable) {
           const last = ivals[ivals.length - 1];
-          nextAvailable = last ? fmtNextAvailable(new Date(last.endMs), timezone) : "Unknown";
+          if (last) {
+            const roundedEndMs = roundToBusinessHours(last.endMs, timezone, offsetMinutes);
+            nextAvailable = fmtNextAvailable(new Date(roundedEndMs), timezone);
+          } else {
+            nextAvailable = "Unknown";
+          }
         }
       }
 
@@ -501,6 +542,9 @@ export default async function handler(req, res) {
         const freesBeforeEndOfDay = first.endMs < d.endUtcMs;
 
         if (freesBeforeEndOfDay) {
+          // Round the free time to business hours (9am if between 6pm-8:45am)
+          const roundedEndMs = roundToBusinessHours(first.endMs, timezone, offsetMinutes);
+          
           return {
             date: d.date,
             label: d.label,
@@ -508,7 +552,7 @@ export default async function handler(req, res) {
             bookedFrom,
             bookedUntil,
             backTime: fmtTime(first.stopsRaw, timezone),
-            freeTime: fmtTime(new Date(first.endMs), timezone),
+            freeTime: fmtTime(new Date(roundedEndMs), timezone),
           };
         }
 
