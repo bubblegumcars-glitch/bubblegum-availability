@@ -1,13 +1,115 @@
+# Setting up clean.bubblegumcars.com
+
+## Step 1: Add the cleaning page to your GitHub repo
+
+1. Upload `clean.html` to your GitHub repository root (same level as `index.html`)
+2. Commit and push
+
+## Step 2: Set up the subdomain in Vercel
+
+1. Go to your Vercel dashboard
+2. Click on your **bubblegum-cars** project
+3. Go to **Settings** → **Domains**
+4. Click **Add Domain**
+5. Enter: `clean.bubblegumcars.com`
+6. Click **Add**
+
+## Step 3: Configure DNS (if needed)
+
+If you haven't set up the subdomain DNS yet:
+
+1. Go to your domain registrar (where you bought bubblegumcars.com)
+2. Add a **CNAME record**:
+   - **Name**: `clean`
+   - **Value**: `cname.vercel-dns.com`
+   - **TTL**: Automatic or 3600
+
+## Step 4: Configure Vercel rewrites
+
+Create or update `vercel.json` in your GitHub repo root:
+
+```json
 {
-  "version": 2,
-  "routes": [
+  "rewrites": [
     {
-      "src": "/api/(.*)",
-      "dest": "/api/$1"
+      "source": "/(.*)",
+      "destination": "/index.html",
+      "has": [
+        {
+          "type": "host",
+          "value": "staff.bubblegumcars.com"
+        }
+      ]
     },
     {
-      "src": "/(.*)",
-      "dest": "/index.html"
+      "source": "/(.*)",
+      "destination": "/clean.html",
+      "has": [
+        {
+          "type": "host",
+          "value": "clean.bubblegumcars.com"
+        }
+      ]
     }
   ]
 }
+```
+
+## Step 5: Test
+
+Visit `clean.bubblegumcars.com` and you should see the cleaning schedule!
+
+---
+
+## What the cleaning page shows:
+
+**🔴 Priority Section (Clean before 9am):**
+- Cars returned after 6pm the previous night
+- Shows return time
+- Shows next rental time (so cleaners know urgency)
+- **"Mark as Ready to Clean" button** - click when car is returned early
+
+**🟠 Returning Today Section:**
+- Cars coming back during the day
+- Sorted by return time
+- Shows when they're free after cleaning buffer
+- **"Mark as Ready to Clean" button** - click when car arrives
+
+**🟡 Tomorrow Morning Section:**
+- Cars that will need cleaning tomorrow
+- Includes: cars returning after 6pm today + cars returning tomorrow
+- Helps cleaners plan ahead
+- **"Mark as Ready to Clean" button** - for advance planning
+
+**Features:**
+- ✅ Auto-refreshes every 2 minutes
+- ✅ Same style as staff page
+- ✅ Mobile-friendly
+- ✅ Shows counts in badges
+- ✅ Highlights urgent cleans (less than 4 hours to next rental)
+- ✅ **Ready to Clean button** - marks cars for cleaning queue
+- ✅ **Green border** when marked as ready
+- ✅ **Click green badge to unmark** if clicked by mistake
+- ✅ Status saved in browser (cleared after 24 hours automatically)
+
+## How the "Ready to Clean" button works:
+
+1. **When car arrives early** → Click "Mark as Ready to Clean"
+2. **Card gets green border** → Shows "✓ Ready to clean" badge
+3. **Status persists** → Saved in browser, survives page refresh
+4. **Auto-cleanup** → Status cleared after 24 hours
+5. **Unmark** → Click the green "✓ Ready to clean" badge to unmark
+
+---
+
+## Troubleshooting
+
+**Page shows staff view instead of cleaning view:**
+- Check that `vercel.json` is in your repo
+- Make sure domain is added in Vercel settings
+- Try redeploying in Vercel
+
+**"No cars need cleaning" but there should be:**
+- The logic looks for cars with `backTime` after 6pm
+- Check that your bookings have proper return times
+- Try refreshing the page
