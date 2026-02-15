@@ -491,36 +491,69 @@ export default async function handler(req, res) {
 
       // booked now if any interval contains now
       const bookedNow = ivals.some((iv) => nowMs >= iv.startMs && nowMs < iv.endMs);
+      
+      // Check if we're currently in business hours (9am - 6pm)
+      const localNowMs = nowMs + (offsetMinutes * 60 * 1000);
+      const localNow = new Date(localNowMs);
+      const currentHour = localNow.getUTCHours();
+      const isBusinessHours = currentHour >= 9 && currentHour < 18;
 
       // next available
       let nextAvailable = "Available now";
-      if (bookedNow) {
+      
+      // Only show "Available now" if not booked AND during business hours
+      if (bookedNow || !isBusinessHours) {
         nextAvailable = null;
 
-        // find the active or next blocking interval
+        // Find the next available slot
+        let foundAvailableSlot = false;
+        
         for (let i = 0; i < ivals.length; i++) {
           const iv = ivals[i];
 
-          if (nowMs < iv.endMs) {
-            const nextStart = ivals[i + 1]?.startMs ?? null;
-            const gapMs = nextStart ? nextStart - iv.endMs : null;
+          // Skip past bookings
+          if (nowMs >= iv.endMs) continue;
 
-            if (gapMs === null || gapMs >= minRentableGapHours * 3600000) {
-              // Round late returns to 9am next business day
-              const roundedEndMs = roundToBusinessHours(iv.endMs, timezone, offsetMinutes);
-              nextAvailable = fmtNextAvailable(new Date(roundedEndMs), timezone);
-              break;
-            }
+          // Round this interval's end to business hours
+          const roundedEndMs = roundToBusinessHours(iv.endMs, timezone, offsetMinutes);
+          
+          // Check if the next interval starts BEFORE our rounded available time
+          const nextInterval = ivals[i + 1];
+          
+          if (!nextInterval) {
+            // No more bookings after this one
+            nextAvailable = fmtNextAvailable(new Date(roundedEndMs), timezone);
+            foundAvailableSlot = true;
+            break;
           }
+          
+          // If next booking starts after our rounded time, we have a rentable gap
+          if (nextInterval.startMs >= roundedEndMs + (minRentableGapHours * 3600000)) {
+            nextAvailable = fmtNextAvailable(new Date(roundedEndMs), timezone);
+            foundAvailableSlot = true;
+            break;
+          }
+          
+          // Otherwise, the rounded time conflicts with next booking, so continue to next interval
         }
 
+        // If we're outside business hours, not currently booked, and have no future bookings
+        if (!foundAvailableSlot && !bookedNow && ivals.length === 0) {
+          // Round current time to next 9am
+          const nextBusinessOpen = roundToBusinessHours(nowMs, timezone, offsetMinutes);
+          nextAvailable = fmtNextAvailable(new Date(nextBusinessOpen), timezone);
+        }
+        
+        // Fallback for edge cases
         if (!nextAvailable) {
           const last = ivals[ivals.length - 1];
           if (last) {
             const roundedEndMs = roundToBusinessHours(last.endMs, timezone, offsetMinutes);
             nextAvailable = fmtNextAvailable(new Date(roundedEndMs), timezone);
           } else {
-            nextAvailable = "Unknown";
+            // No bookings at all, round current time to next business hours
+            const nextBusinessOpen = roundToBusinessHours(nowMs, timezone, offsetMinutes);
+            nextAvailable = fmtNextAvailable(new Date(nextBusinessOpen), timezone);
           }
         }
       }
