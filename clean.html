@@ -480,55 +480,60 @@
         for (let dayIndex = 0; dayIndex < (car.days || []).length; dayIndex++) {
           const day = car.days[dayIndex];
           
-          // Skip if no day or not a heads-up/booked day
+          // Skip if available
           if (!day || day.status === 'Available') continue;
 
+          // Determine the return time (backTime for heads-up, bookedUntil for booked)
+          const returnTime = day.backTime || day.bookedUntil;
+          
+          if (!returnTime) continue;
+
           // Priority: Cars returned yesterday after 6pm (need cleaning ASAP before 9am)
-          if (dayIndex === 0 && day.backTime) {
-            const backTimeMinutes = parseTime(day.backTime);
+          if (dayIndex === 0 && returnTime) {
+            const backTimeMinutes = parseTime(returnTime);
             // If returned after 6pm (18:00), it needs cleaning before 9am
             if (backTimeMinutes >= 18 * 60) {
               priorityCars.push({
                 car,
-                returnTime: day.backTime,
+                returnTime: returnTime,
                 nextRental: car.days[1]?.bookedFrom || null
               });
             }
           }
 
           // Returning Today: Cars that haven't returned yet (future returns today)
-          if (day.date === todayDate && day.backTime) {
-            const backTimeMinutes = parseTime(day.backTime);
+          if (day.date === todayDate && returnTime) {
+            const backTimeMinutes = parseTime(returnTime);
             // Only show if it hasn't returned yet
             if (backTimeMinutes > currentTime) {
               todayCars.push({
                 car,
-                returnTime: day.backTime,
+                returnTime: returnTime,
                 nextRental: day.freeTime || null
               });
             }
           }
 
           // Tomorrow Morning: ALL cars that returned today (any time) need cleaning tomorrow
-          if (day.date === todayDate && day.backTime) {
-            const backTimeMinutes = parseTime(day.backTime);
+          if (day.date === todayDate && returnTime) {
+            const backTimeMinutes = parseTime(returnTime);
             // Include ALL cars that returned today (already returned or returning later)
             tomorrowCars.push({
               car,
-              returnTime: day.backTime,
+              returnTime: returnTime,
               nextRental: car.days[1]?.bookedFrom || null, // Tomorrow's first rental
               label: backTimeMinutes <= currentTime ? 'Returned today' : 'Returns today'
             });
           }
 
           // Tomorrow Morning: Also include cars returning tomorrow after 6pm
-          if (day.date === tomorrowDate && day.backTime) {
-            const backTimeMinutes = parseTime(day.backTime);
+          if (day.date === tomorrowDate && returnTime) {
+            const backTimeMinutes = parseTime(returnTime);
             // If returning after 6pm tomorrow, will need cleaning the day after
             if (backTimeMinutes >= 18 * 60) {
               tomorrowCars.push({
                 car,
-                returnTime: day.backTime,
+                returnTime: returnTime,
                 nextRental: car.days[2]?.bookedFrom || null,
                 label: 'Returns tomorrow'
               });
