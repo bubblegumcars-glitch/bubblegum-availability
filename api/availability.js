@@ -545,14 +545,31 @@ export default async function handler(req, res) {
           // Round the free time to business hours (9am if between 6pm-8:45am)
           const roundedEndMs = roundToBusinessHours(first.endMs, timezone, offsetMinutes);
           
+          // Check if the rounded time falls on the SAME day or NEXT day
+          // If it rounds to next day, this day should be RED (fully booked), not orange
+          const endDayStart = d.startUtcMs;
+          const endDayEnd = d.endUtcMs;
+          
+          // If rounded time is still within this day, show Heads-up (orange)
+          if (roundedEndMs < endDayEnd) {
+            return {
+              date: d.date,
+              label: d.label,
+              status: "Heads-up",
+              bookedFrom,
+              bookedUntil,
+              backTime: fmtTime(first.stopsRaw, timezone),
+              freeTime: fmtTime(new Date(roundedEndMs), timezone),
+            };
+          }
+          
+          // Otherwise, rounded to next day = show as fully Booked (red)
           return {
             date: d.date,
             label: d.label,
-            status: "Heads-up",
+            status: "Booked",
             bookedFrom,
             bookedUntil,
-            backTime: fmtTime(first.stopsRaw, timezone),
-            freeTime: fmtTime(new Date(roundedEndMs), timezone),
           };
         }
 
