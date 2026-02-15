@@ -1,84 +1,883 @@
-# Cleaning Page Updates
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Bubblegum Cars — Cleaning Schedule</title>
+  
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
+  
+  <style>
+    :root {
+      --bg: #f4f5f7;
+      --card: #ffffff;
+      --text: #111;
+      --muted: #777;
+      --shadow: 0 6px 18px rgba(0,0,0,.08);
+      --radius: 18px;
+      --priority: #d92f3f;
+      --today: #f39a12;
+      --done: #2ca340;
+    }
 
-## What Changed:
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
 
-### 1. **New Section: ⚡ Quick Turnaround Needed** (Top Priority)
-- Shows cars that are being returned and rented again within 30 minutes
-- **Red badge** (most urgent)
-- Sorted by gap time (smallest gap first)
-- Shows "X min gap" label
-- Example: "Blossom returns 11:30, next rental 11:45" → 15 min gap
+    header {
+      padding: 28px 16px 8px;
+      text-align: center;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(28px, 4vw, 52px);
+      letter-spacing: -0.02em;
+      font-weight: 800;
+    }
+    .subtitle {
+      color: var(--muted);
+      font-size: 18px;
+      margin-top: 8px;
+    }
 
-### 2. **Priority Section - Now Sorted by Next Rental Time**
-- Cars returned after 6pm last night
-- **Sorted by next rental time** (earliest rental times at top)
-- Cars with 9-10am rentals appear FIRST
-- Cars with later rentals appear below
+    .controls {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      padding: 10px 16px 22px;
+    }
 
----
+    button {
+      border: 0;
+      background: #e9eaee;
+      padding: 12px 18px;
+      font-weight: 700;
+      border-radius: 14px;
+      cursor: pointer;
+      box-shadow: 0 2px 0 rgba(0,0,0,.06) inset;
+    }
+    button:hover { filter: brightness(.98); }
 
-## Section Order (Top to Bottom):
+    .wrap {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 0 14px 40px;
+    }
 
-### **⚡ Quick Turnaround Needed** (Red badge)
-- Return → Next rental ≤ 30 minutes
-- Most urgent - needs immediate cleaning
-- Sorted: Smallest gap first
+    .error {
+      margin: 18px auto;
+      background: #fff;
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 16px 18px;
+      color: #9c1f2a;
+      font-weight: 800;
+      border-left: 10px solid var(--priority);
+      white-space: pre-wrap;
+      overflow-x: auto;
+    }
 
-### **🔴 Priority** (Red badge)
-- Returned after 6pm yesterday
-- Clean before 9am
-- Sorted: Earliest next rental first (9am at top)
+    .section {
+      margin: 32px 0;
+    }
 
-### **🟠 Returning Today** (Orange badge)
-- Cars coming back during the day
-- Sorted: Return time (earliest first)
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
 
-### **🟡 Tomorrow Morning** (Orange badge)
-- Cars returned today + returning tomorrow
-- Sorted: Return time (earliest first)
+    .section-title {
+      font-size: 28px;
+      font-weight: 800;
+      margin: 0;
+    }
 
----
+    .section-badge {
+      background: var(--priority);
+      color: white;
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 16px;
+      font-weight: 800;
+    }
 
-## Logic Details:
+    .section-badge.today {
+      background: var(--today);
+    }
 
-**Quick Turnaround Detection:**
-```javascript
-returnTime = 11:30
-nextRental = 11:45
-gap = 15 minutes
-→ Shows in Quick Turnaround section (gap ≤ 30 min)
-```
+    .empty-message {
+      text-align: center;
+      padding: 40px 20px;
+      color: var(--muted);
+      font-size: 20px;
+      font-weight: 600;
+    }
 
-**Priority Sorting:**
-```javascript
-Car A: Next rental 09:15
-Car B: Next rental 10:30
-Car C: Next rental 14:00
+    .car-card {
+      background: var(--card);
+      border-radius: 22px;
+      box-shadow: var(--shadow);
+      padding: 18px;
+      margin: 16px 0;
+      display: grid;
+      grid-template-columns: 110px 1fr;
+      gap: 18px;
+      align-items: center;
+    }
 
-Display order:
-1. Car A (09:15) ← Highest priority
-2. Car B (10:30)
-3. Car C (14:00)
-```
+    .thumb {
+      width: 110px;
+      height: 78px;
+      object-fit: cover;
+      border-radius: 14px;
+      background: #eee;
+    }
 
----
+    .car-info {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
 
-## Upload Instructions:
+    .car-name {
+      font-size: 36px;
+      font-weight: 900;
+      letter-spacing: -0.03em;
+      margin: 0;
+      line-height: 1;
+    }
 
-1. Upload updated `clean.html` to GitHub
-2. Vercel auto-deploys
-3. Visit `clean.bubblegumcars.com`
-4. Check for Quick Turnaround section at top
+    .car-details {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
 
----
+    .detail-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 18px;
+      font-weight: 600;
+    }
 
-## Testing:
+    .detail-label {
+      color: var(--muted);
+      min-width: 100px;
+    }
 
-To see Quick Turnaround section in action:
-- Look for cars with a very short gap between return and next rental
-- Example: Car returns 11:30, next rental starts 11:45 (15 min gap)
-- These will appear in the red "Quick Turnaround Needed" section
+    .detail-value {
+      color: var(--text);
+      font-weight: 800;
+    }
 
-To see Priority sorting:
-- Cars with 9:00am rentals will be at the top
-- Cars with later rentals (11am, 2pm) will be below
+    .detail-value.urgent {
+      color: var(--priority);
+    }
+
+    .detail-value.soon {
+      color: var(--today);
+    }
+
+    .ready-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #3b82f6;
+      color: white;
+      padding: 6px 12px;
+      border-radius: 12px;
+      font-size: 14px;
+      font-weight: 800;
+      margin-top: 8px;
+    }
+
+    .cleaned-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--done);
+      color: white;
+      padding: 6px 12px;
+      border-radius: 12px;
+      font-size: 14px;
+      font-weight: 800;
+      margin-top: 8px;
+    }
+
+    .button-group {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+
+    .ready-button {
+      background: #3b82f6;
+      color: white;
+      border: none;
+      padding: 10px 16px;
+      border-radius: 12px;
+      font-weight: 700;
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .ready-button:hover {
+      filter: brightness(1.1);
+      transform: scale(1.02);
+    }
+
+    .ready-button:active {
+      transform: scale(0.98);
+    }
+
+    .cleaned-button {
+      background: var(--done);
+      color: white;
+      border: none;
+      padding: 10px 16px;
+      border-radius: 12px;
+      font-weight: 700;
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .cleaned-button:hover {
+      filter: brightness(1.1);
+      transform: scale(1.02);
+    }
+
+    .cleaned-button:active {
+      transform: scale(0.98);
+    }
+
+    .ready-button.marked {
+      background: #ccc;
+      color: #666;
+    }
+
+    .car-card.ready {
+      border: 3px solid #3b82f6;
+      background: #eff6ff;
+    }
+
+    .car-card.cleaned {
+      border: 3px solid var(--done);
+      background: #f0fdf4;
+      opacity: 0.8;
+    }
+
+    footer {
+      text-align: center;
+      color: var(--muted);
+      font-weight: 700;
+      padding: 10px 0 0;
+      font-size: 14px;
+    }
+
+    @media (max-width: 640px) {
+      h1 { font-size: 28px; }
+      .subtitle { font-size: 16px; }
+      .section-title { font-size: 24px; }
+      
+      .car-card {
+        grid-template-columns: 80px 1fr;
+        gap: 14px;
+        padding: 14px;
+      }
+      
+      .thumb {
+        width: 80px;
+        height: 56px;
+      }
+      
+      .car-name {
+        font-size: 28px;
+      }
+      
+      .detail-row {
+        font-size: 16px;
+      }
+      
+      .detail-label {
+        min-width: 80px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🧼 Cleaning Schedule</h1>
+    <div class="subtitle">Today's cars to clean</div>
+  </header>
+
+  <div class="controls">
+    <button id="refreshBtn">Refresh</button>
+  </div>
+
+  <div class="wrap">
+    <div id="error" class="error" style="display:none;"></div>
+    
+    <div class="section">
+      <div class="section-header">
+        <h2 class="section-title">⚡ Quick Turnaround Needed</h2>
+        <span class="section-badge" style="background: #ef4444;" id="turnaroundCount">0</span>
+      </div>
+      <div class="subtitle" style="margin-bottom: 16px;">Returned and rented again within 30 minutes — URGENT!</div>
+      <div id="turnaroundCars"></div>
+    </div>
+    
+    <div class="section">
+      <div class="section-header">
+        <h2 class="section-title">Priority</h2>
+        <span class="section-badge" id="priorityCount">0</span>
+      </div>
+      <div class="subtitle" style="margin-bottom: 16px;">Clean before 9am — returned last night (sorted by next rental time)</div>
+      <div id="priorityCars"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-header">
+        <h2 class="section-title">Returning Today</h2>
+        <span class="section-badge today" id="todayCount">0</span>
+      </div>
+      <div class="subtitle" style="margin-bottom: 16px;">Cars coming back during the day</div>
+      <div id="todayCars"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-header">
+        <h2 class="section-title">Tomorrow Morning</h2>
+        <span class="section-badge today" id="tomorrowCount">0</span>
+      </div>
+      <div class="subtitle" style="margin-bottom: 16px;">Cars that returned today + cars returning tomorrow (need cleaning before next rental)</div>
+      <div id="tomorrowCars"></div>
+    </div>
+
+    <footer id="updated"></footer>
+  </div>
+
+  <script>
+    // Firebase Configuration
+    const firebaseConfig = {
+      apiKey: "AIzaSyCxiEJiMeCesbzLzY9aRX6LExpoGzu5sw8",
+      authDomain: "clean-969d4.firebaseapp.com",
+      databaseURL: "https://clean-969d4-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "clean-969d4",
+      storageBucket: "clean-969d4.firebasestorage.app",
+      messagingSenderId: "43890146586",
+      appId: "1:43890146586:web:29331b94f6aed7581e80a3",
+      measurementId: "G-5G753LRVL7"
+    };
+
+    // Initialize Firebase
+    let database = null;
+    let firebaseInitialized = false;
+
+    try {
+      firebase.initializeApp(firebaseConfig);
+      database = firebase.database();
+      firebaseInitialized = true;
+      console.log('Firebase initialized successfully');
+    } catch (error) {
+      console.error('Firebase initialization failed:', error);
+      console.log('Falling back to localStorage');
+    }
+
+    const errEl = document.getElementById('error');
+    const updatedEl = document.getElementById('updated');
+    const refreshBtn = document.getElementById('refreshBtn');
+    const turnaroundCarsEl = document.getElementById('turnaroundCars');
+    const priorityCarsEl = document.getElementById('priorityCars');
+    const todayCarsEl = document.getElementById('todayCars');
+    const tomorrowCarsEl = document.getElementById('tomorrowCars');
+    const turnaroundCountEl = document.getElementById('turnaroundCount');
+    const priorityCountEl = document.getElementById('priorityCount');
+    const todayCountEl = document.getElementById('todayCount');
+    const tomorrowCountEl = document.getElementById('tomorrowCount');
+
+    // Cache for cleaning status (updated in real-time from Firebase)
+    let cleaningStatusCache = {};
+
+    // Firebase functions for tracking ready-to-clean and cleaned status
+    async function initializeFirebaseListener() {
+      if (!firebaseInitialized || !database) return;
+
+      const statusRef = database.ref('cleaningStatus');
+      
+      // Listen for real-time updates
+      statusRef.on('value', (snapshot) => {
+        const data = snapshot.val() || {};
+        
+        // Clean up old entries (older than 24 hours)
+        const now = Date.now();
+        const cleaned = {};
+        let needsUpdate = false;
+
+        for (const [carId, entry] of Object.entries(data)) {
+          if (now - entry.timestamp < 24 * 60 * 60 * 1000) {
+            cleaned[carId] = entry;
+          } else {
+            needsUpdate = true;
+          }
+        }
+
+        cleaningStatusCache = cleaned;
+
+        // If we cleaned up old entries, update Firebase
+        if (needsUpdate) {
+          statusRef.set(cleaned).catch(err => console.error('Cleanup error:', err));
+        }
+
+        // Re-render when status changes
+        if (window.lastLoadedData) {
+          render(window.lastLoadedData);
+        }
+      });
+    }
+
+    async function setCleaningStatus(carId, status) {
+      // status can be: 'ready', 'cleaned', or null (to clear)
+      
+      if (firebaseInitialized && database) {
+        // Use Firebase
+        try {
+          const statusRef = database.ref('cleaningStatus/' + carId);
+          
+          if (status) {
+            await statusRef.set({
+              status: status,
+              timestamp: Date.now()
+            });
+          } else {
+            await statusRef.remove();
+          }
+        } catch (error) {
+          console.error('Firebase error:', error);
+          // Fallback to localStorage
+          setCleaningStatusLocal(carId, status);
+        }
+      } else {
+        // Fallback to localStorage
+        setCleaningStatusLocal(carId, status);
+      }
+    }
+
+    function getCarStatus(carId) {
+      if (firebaseInitialized && database) {
+        // Use cached Firebase data
+        return cleaningStatusCache[carId]?.status || null;
+      } else {
+        // Fallback to localStorage
+        return getCarStatusLocal(carId);
+      }
+    }
+
+    // LocalStorage fallback functions
+    function getCleaningStatusLocal() {
+      try {
+        const stored = localStorage.getItem('cleaningStatus');
+        if (!stored) return {};
+        const data = JSON.parse(stored);
+        // Clean up old entries (older than 24 hours)
+        const now = Date.now();
+        const cleaned = {};
+        for (const [carId, entry] of Object.entries(data)) {
+          if (now - entry.timestamp < 24 * 60 * 60 * 1000) {
+            cleaned[carId] = entry;
+          }
+        }
+        localStorage.setItem('cleaningStatus', JSON.stringify(cleaned));
+        return cleaned;
+      } catch (e) {
+        return {};
+      }
+    }
+
+    function setCleaningStatusLocal(carId, status) {
+      try {
+        const current = getCleaningStatusLocal();
+        if (status) {
+          current[carId] = {
+            status: status,
+            timestamp: Date.now()
+          };
+        } else {
+          delete current[carId];
+        }
+        localStorage.setItem('cleaningStatus', JSON.stringify(current));
+      } catch (e) {
+        console.error('Failed to save status', e);
+      }
+    }
+
+    function getCarStatusLocal(carId) {
+      const status = getCleaningStatusLocal();
+      return status[carId]?.status || null;
+    }
+
+    function setError(msg) {
+      errEl.style.display = msg ? 'block' : 'none';
+      errEl.textContent = msg || '';
+    }
+
+    function parseTime(timeStr) {
+      // Parse "HH:MM" format
+      const [hours, minutes] = timeStr.split(':').map(Number);
+      return hours * 60 + minutes;
+    }
+
+    function formatTimeRelative(timeStr) {
+      const time = parseTime(timeStr);
+      const now = new Date();
+      const currentMinutes = now.getHours() * 60 + now.getMinutes();
+      const diff = time - currentMinutes;
+
+      if (diff < 60) {
+        return `${diff} min`;
+      }
+      const hours = Math.floor(diff / 60);
+      return `${hours}h ${diff % 60}m`;
+    }
+
+    function createCarCard(car, returnTime, nextRental, label) {
+      const card = document.createElement('div');
+      card.className = 'car-card';
+      
+      const carStatus = getCarStatus(car.id);
+      
+      if (carStatus === 'ready') {
+        card.classList.add('ready');
+      } else if (carStatus === 'cleaned') {
+        card.classList.add('cleaned');
+      }
+
+      let nextRentalHTML = '';
+      if (nextRental) {
+        const urgencyClass = parseTime(nextRental) - parseTime(returnTime) < 240 ? 'urgent' : 'soon';
+        nextRentalHTML = `
+          <div class="detail-row">
+            <span class="detail-label">Next rental:</span>
+            <span class="detail-value ${urgencyClass}">${nextRental}</span>
+          </div>
+        `;
+      }
+
+      const labelHTML = label ? `
+        <div class="detail-row">
+          <span class="detail-label">${label}</span>
+        </div>
+      ` : '';
+
+      // Always show both buttons separately
+      let statusHTML = '';
+      
+      if (carStatus === 'cleaned') {
+        // If cleaned, show green badge and ready button
+        statusHTML = `
+          <div class="cleaned-badge" data-car-id="${car.id}" style="cursor: pointer;" title="Click to unmark">✓ Cleaned</div>
+          <button class="ready-button" data-car-id="${car.id}">Mark as Ready to Clean</button>
+        `;
+      } else if (carStatus === 'ready') {
+        // If ready, show blue badge and cleaned button
+        statusHTML = `
+          <div class="ready-badge" data-car-id="${car.id}" style="cursor: pointer;" title="Click to unmark">✓ Ready to clean</div>
+          <button class="cleaned-button" data-car-id="${car.id}">Mark as Cleaned</button>
+        `;
+      } else {
+        // Default: show both buttons
+        statusHTML = `
+          <button class="ready-button" data-car-id="${car.id}">Mark as Ready to Clean</button>
+          <button class="cleaned-button" data-car-id="${car.id}">Mark as Cleaned</button>
+        `;
+      }
+
+      card.innerHTML = `
+        <img class="thumb" src="${car.photo_url || ''}" alt="${car.name || ''}" />
+        <div class="car-info">
+          <h3 class="car-name">${car.name || ''}</h3>
+          <div class="car-details">
+            <div class="detail-row">
+              <span class="detail-label">Returned:</span>
+              <span class="detail-value">${returnTime}</span>
+            </div>
+            ${nextRentalHTML}
+            ${labelHTML}
+          </div>
+          <div class="button-group">
+            ${statusHTML}
+          </div>
+        </div>
+      `;
+
+      // Add event listeners
+      const readyButton = card.querySelector('.ready-button');
+      if (readyButton) {
+        readyButton.addEventListener('click', function() {
+          const carId = this.getAttribute('data-car-id');
+          setCleaningStatus(carId, 'ready');
+          // No need to call load() - Firebase listener will auto-update
+        });
+      }
+
+      const cleanedButton = card.querySelector('.cleaned-button');
+      if (cleanedButton) {
+        cleanedButton.addEventListener('click', function() {
+          const carId = this.getAttribute('data-car-id');
+          setCleaningStatus(carId, 'cleaned');
+          // No need to call load() - Firebase listener will auto-update
+        });
+      }
+
+      const readyBadge = card.querySelector('.ready-badge');
+      if (readyBadge) {
+        readyBadge.addEventListener('click', function() {
+          const carId = this.getAttribute('data-car-id');
+          setCleaningStatus(carId, null);
+          // No need to call load() - Firebase listener will auto-update
+        });
+      }
+
+      const cleanedBadge = card.querySelector('.cleaned-badge');
+      if (cleanedBadge) {
+        cleanedBadge.addEventListener('click', function() {
+          const carId = this.getAttribute('data-car-id');
+          setCleaningStatus(carId, null);
+          // No need to call load() - Firebase listener will auto-update
+        });
+      }
+
+      return card;
+    }
+
+    function render(data) {
+      // Save data for Firebase listener re-renders
+      window.lastLoadedData = data;
+      
+      turnaroundCarsEl.innerHTML = '';
+      priorityCarsEl.innerHTML = '';
+      todayCarsEl.innerHTML = '';
+      tomorrowCarsEl.innerHTML = '';
+
+      const now = new Date();
+      const currentHour = now.getHours();
+      const currentMinutes = now.getMinutes();
+      const currentTime = currentHour * 60 + currentMinutes;
+
+      // Get today's and tomorrow's dates
+      const todayDate = data.days && data.days[0] ? data.days[0].date : null;
+      const tomorrowDate = data.days && data.days[1] ? data.days[1].date : null;
+
+      const turnaroundCars = [];
+      const priorityCars = [];
+      const todayCars = [];
+      const tomorrowCars = [];
+
+      for (const car of (data.cars || [])) {
+        // Look through the days to find returns
+        for (let dayIndex = 0; dayIndex < (car.days || []).length; dayIndex++) {
+          const day = car.days[dayIndex];
+          
+          // Skip if available
+          if (!day || day.status === 'Available') continue;
+
+          // Determine the return time (backTime for heads-up, bookedUntil for booked)
+          const returnTime = day.backTime || day.bookedUntil;
+          
+          if (!returnTime) continue;
+
+          // Check for quick turnaround (return + next rental within 30 mins)
+          if (day.date === todayDate && returnTime) {
+            const nextRental = day.freeTime || car.days[1]?.bookedFrom;
+            if (nextRental) {
+              const returnMinutes = parseTime(returnTime);
+              const nextRentalMinutes = parseTime(nextRental);
+              const gapMinutes = nextRentalMinutes - returnMinutes;
+              
+              // If gap is 30 minutes or less, it's a quick turnaround
+              if (gapMinutes > 0 && gapMinutes <= 30) {
+                turnaroundCars.push({
+                  car,
+                  returnTime: returnTime,
+                  nextRental: nextRental,
+                  gap: gapMinutes,
+                  label: `${gapMinutes} min gap`
+                });
+                continue; // Skip adding to other sections
+              }
+            }
+          }
+
+          // Priority: Cars returned yesterday after 6pm (need cleaning ASAP before 9am)
+          if (dayIndex === 0 && returnTime) {
+            const backTimeMinutes = parseTime(returnTime);
+            // If returned after 6pm (18:00), it needs cleaning before 9am
+            if (backTimeMinutes >= 18 * 60) {
+              priorityCars.push({
+                car,
+                returnTime: returnTime,
+                nextRental: car.days[1]?.bookedFrom || null,
+                nextRentalMinutes: car.days[1]?.bookedFrom ? parseTime(car.days[1].bookedFrom) : 999999
+              });
+            }
+          }
+
+          // Returning Today: Cars that haven't returned yet (future returns today)
+          if (day.date === todayDate && returnTime) {
+            const backTimeMinutes = parseTime(returnTime);
+            // Only show if it hasn't returned yet
+            if (backTimeMinutes > currentTime) {
+              todayCars.push({
+                car,
+                returnTime: returnTime,
+                nextRental: day.freeTime || null
+              });
+            }
+          }
+
+          // Tomorrow Morning: ALL cars that returned today (any time) need cleaning tomorrow
+          if (day.date === todayDate && returnTime) {
+            const backTimeMinutes = parseTime(returnTime);
+            // Include ALL cars that returned today (already returned or returning later)
+            tomorrowCars.push({
+              car,
+              returnTime: returnTime,
+              nextRental: car.days[1]?.bookedFrom || null, // Tomorrow's first rental
+              label: backTimeMinutes <= currentTime ? 'Returned today' : 'Returns today'
+            });
+          }
+
+          // Tomorrow Morning: Also include cars returning tomorrow after 6pm
+          if (day.date === tomorrowDate && returnTime) {
+            const backTimeMinutes = parseTime(returnTime);
+            // If returning after 6pm tomorrow, will need cleaning the day after
+            if (backTimeMinutes >= 18 * 60) {
+              tomorrowCars.push({
+                car,
+                returnTime: returnTime,
+                nextRental: car.days[2]?.bookedFrom || null,
+                label: 'Returns tomorrow'
+              });
+            }
+          }
+        }
+      }
+
+      // Remove duplicates from tomorrow (car might be in there twice)
+      const tomorrowCarsUnique = [];
+      const seenCarIds = new Set();
+      for (const item of tomorrowCars) {
+        if (!seenCarIds.has(item.car.id)) {
+          seenCarIds.add(item.car.id);
+          tomorrowCarsUnique.push(item);
+        }
+      }
+
+      // Sort turnaround cars by gap (smallest gap first - most urgent)
+      turnaroundCars.sort((a, b) => a.gap - b.gap);
+
+      // Sort priority cars by next rental time (earliest first - 9am rentals at top)
+      priorityCars.sort((a, b) => a.nextRentalMinutes - b.nextRentalMinutes);
+
+      // Sort today's cars by return time
+      todayCars.sort((a, b) => parseTime(a.returnTime) - parseTime(b.returnTime));
+      
+      // Sort tomorrow's cars by return time
+      tomorrowCarsUnique.sort((a, b) => parseTime(a.returnTime) - parseTime(b.returnTime));
+
+      // Render quick turnaround cars
+      if (turnaroundCars.length === 0) {
+        turnaroundCarsEl.innerHTML = '<div class="empty-message">✅ No quick turnarounds today</div>';
+      } else {
+        for (const item of turnaroundCars) {
+          turnaroundCarsEl.appendChild(createCarCard(item.car, item.returnTime, item.nextRental, item.label));
+        }
+      }
+
+      // Render priority cars
+      if (priorityCars.length === 0) {
+        priorityCarsEl.innerHTML = '<div class="empty-message">✅ No cars need urgent cleaning</div>';
+      } else {
+        for (const item of priorityCars) {
+          priorityCarsEl.appendChild(createCarCard(item.car, item.returnTime, item.nextRental, item.label));
+        }
+      }
+
+      // Render today's cars
+      if (todayCars.length === 0) {
+        todayCarsEl.innerHTML = '<div class="empty-message">No cars returning later today</div>';
+      } else {
+        for (const item of todayCars) {
+          todayCarsEl.appendChild(createCarCard(item.car, item.returnTime, item.nextRental, item.label));
+        }
+      }
+
+      // Render tomorrow's cars
+      if (tomorrowCarsUnique.length === 0) {
+        tomorrowCarsEl.innerHTML = '<div class="empty-message">No cars to clean tomorrow morning</div>';
+      } else {
+        for (const item of tomorrowCarsUnique) {
+          tomorrowCarsEl.appendChild(createCarCard(item.car, item.returnTime, item.nextRental, item.label));
+        }
+      }
+
+      // Update counts
+      turnaroundCountEl.textContent = turnaroundCars.length;
+      priorityCountEl.textContent = priorityCars.length;
+      todayCountEl.textContent = todayCars.length;
+      tomorrowCountEl.textContent = tomorrowCarsUnique.length;
+
+      const ts = new Date();
+      updatedEl.textContent = `Last updated: ${ts.toLocaleString('en-AU')}`;
+    }
+
+    async function load() {
+      setError('');
+      turnaroundCarsEl.innerHTML = '';
+      priorityCarsEl.innerHTML = '';
+      todayCarsEl.innerHTML = '';
+      tomorrowCarsEl.innerHTML = '';
+      updatedEl.textContent = '';
+
+      try {
+        const res = await fetch('/api/availability', { cache: 'no-store' });
+        const json = await res.json();
+
+        if (!res.ok) {
+          setError(json?.error || `HTTP ${res.status}`);
+          return;
+        }
+
+        if (json?.error) {
+          setError(json.error);
+          return;
+        }
+
+        render(json);
+      } catch (e) {
+        setError(String(e));
+      }
+    }
+
+    refreshBtn.addEventListener('click', load);
+    
+    // Initialize Firebase listener and load data
+    initializeFirebaseListener();
+    load();
+    
+    // Auto-refresh every 2 minutes
+    setInterval(load, 120000);
+  </script>
+</body>
+</html>
