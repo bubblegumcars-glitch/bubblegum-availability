@@ -1,64 +1,225 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
+  <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Bubblegum Cars – Staff View</title>
+  <title>Bubblegum Cars — Staff View</title>
   <style>
-    :root{
-      --bg:#f4f5f7;
-      --card:#ffffff;
-      --text:#111;
-      --muted:#777;
-      --shadow: 0 6px 16px rgba(0,0,0,.10);
-      --green:#28a745;
-      --red:#dc3545;
-      --orange:#f39c12;
+    :root {
+      --bg: #f4f5f7;
+      --card: #ffffff;
+      --text: #111;
+      --muted: #777;
+      --shadow: 0 6px 18px rgba(0,0,0,.08);
+      --radius: 18px;
+
+      --green: #2ca340;
+      --red: #d92f3f;
+      --orange: #f39a12;
     }
-    *{box-sizing:border-box}
-    body{
-      margin:0;
-      background:var(--bg);
-      color:var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
     }
-    header{ padding:22px 16px 8px; text-align:center; }
-    h1{ margin:0; font-size:34px; font-weight:800; letter-spacing:.2px; }
-    .controls{ display:flex; justify-content:center; gap:10px; padding:10px 16px 14px; }
-    button{ border:none; background:#e9eaee; padding:10px 16px; border-radius:10px; font-weight:700; cursor:pointer; }
-    button:active{transform:scale(.99)}
-    .wrap{ max-width:1180px; margin:0 auto; padding:0 14px 28px; }
-    .car{ background:var(--card); border-radius:16px; box-shadow:var(--shadow); margin:14px 0; overflow:hidden; }
-    .carTop{ display:flex; gap:16px; padding:16px; align-items:center; }
-    .thumb{ width:110px; height:70px; border-radius:10px; object-fit:cover; background:#ddd; flex:0 0 auto; }
-    .meta{ flex:1; min-width:0; }
-    .name{ font-size:34px; font-weight:800; margin:0 0 4px; line-height:1.05; }
-    .next{ text-align:right; min-width:160px; }
-    .next .label{ color:#888; font-weight:800; font-size:18px; line-height:1.1; }
-    .next .value{ font-weight:900; font-size:24px; line-height:1.1; }
-    .days{ display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:10px; padding:0 16px 16px; }
-    .day{
-      border-radius:14px; padding:12px 10px; color:#fff; font-weight:900; text-align:center;
-      line-height:1.1; min-height:86px; display:flex; flex-direction:column; justify-content:center;
+
+    header {
+      padding: 28px 16px 8px;
+      text-align: center;
     }
-    .day .top{ font-size:22px; margin-bottom:4px; }
-    .day .mid{ font-size:22px; margin-bottom:4px; }
-    .day .small{ font-size:18px; font-weight:800; opacity:.95; }
-    .green{ background:var(--green); }
-    .red{ background:var(--red); }
-    .orange{ background:var(--orange); }
-    .footer{ text-align:center; color:var(--muted); font-weight:700; padding:12px 0 4px; }
-    .error{ background:#fff; border-radius:14px; box-shadow:var(--shadow); padding:14px; margin:14px 0; color:#b00020; font-weight:800; }
-    @media (max-width: 860px){
-      .name{font-size:28px}
-      .days{grid-template-columns: repeat(2, minmax(0, 1fr));}
-      .next{min-width:140px}
+    h1 {
+      margin: 0;
+      font-size: clamp(28px, 4vw, 52px);
+      letter-spacing: -0.02em;
+      font-weight: 800;
+    }
+
+    .controls {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      padding: 10px 16px 22px;
+    }
+
+    button {
+      border: 0;
+      background: #e9eaee;
+      padding: 12px 18px;
+      font-weight: 700;
+      border-radius: 14px;
+      cursor: pointer;
+      box-shadow: 0 2px 0 rgba(0,0,0,.06) inset;
+    }
+    button:hover { filter: brightness(.98); }
+
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 0 14px 40px;
+    }
+
+    .error {
+      margin: 18px auto;
+      background: #fff;
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 16px 18px;
+      color: #9c1f2a;
+      font-weight: 800;
+      border-left: 10px solid #d92f3f;
+      white-space: pre-wrap;
+      overflow-x: auto;
+    }
+
+    .car {
+      background: var(--card);
+      border-radius: 22px;
+      box-shadow: var(--shadow);
+      padding: 18px;
+      margin: 16px 0;
+    }
+
+    .carTop {
+      display: grid;
+      grid-template-columns: 110px 1fr auto;
+      gap: 14px;
+      align-items: center;
+    }
+
+    .thumb {
+      width: 110px;
+      height: 78px;
+      object-fit: cover;
+      border-radius: 14px;
+      background: #eee;
+    }
+
+    .name {
+      font-size: 44px;
+      font-weight: 900;
+      letter-spacing: -0.03em;
+      margin: 0;
+      line-height: 1;
+    }
+
+    .nextAvail {
+      text-align: right;
+      line-height: 1.05;
+      padding-left: 10px;
+    }
+    .nextAvail .label {
+      color: var(--muted);
+      font-weight: 800;
+      font-size: 18px;
+    }
+    .nextAvail .value {
+      font-weight: 900;
+      font-size: 26px;
+    }
+
+    .days {
+      margin-top: 14px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .pill {
+      border-radius: 18px;
+      padding: 14px 12px;
+      text-align: center;
+      color: #fff;
+      font-weight: 900;
+      min-height: 88px;
+      display: grid;
+      place-items: center;
+      line-height: 1.1;
+    }
+
+    .pill .d1 { font-size: 18px; opacity: .95; }
+    .pill .d2 { font-size: 24px; }
+    .pill .d3 { font-size: 18px; opacity: .95; font-weight: 800; }
+    .pill .d4 { font-size: 18px; opacity: .95; font-weight: 800; }
+
+    .green { background: var(--green); }
+    .red { background: var(--red); }
+    .orange { background: var(--orange); }
+
+    footer {
+      text-align: center;
+      color: var(--muted);
+      font-weight: 700;
+      padding: 10px 0 0;
+    }
+
+    @media (max-width: 860px) {
+      .carTop {
+        grid-template-columns: 80px 1fr;
+        grid-template-rows: auto auto;
+        gap: 10px;
+      }
+      .nextAvail {
+        grid-column: 1 / -1;
+        text-align: left;
+        padding-left: 0;
+        margin-top: 4px;
+      }
+      .nextAvail .label {
+        font-size: 14px;
+      }
+      .nextAvail .value {
+        font-size: 20px;
+      }
+      .thumb { width: 80px; height: 56px; }
+      .name { font-size: 28px; }
+      .days { 
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .car {
+        padding: 14px;
+        margin: 12px 0;
+      }
+      .pill {
+        padding: 10px 8px;
+        min-height: 75px;
+      }
+      .pill .d1 { font-size: 15px; }
+      .pill .d2 { font-size: 20px; }
+      .pill .d3 { font-size: 15px; }
+      .pill .d4 { font-size: 15px; }
+    }
+
+    @media (max-width: 480px) {
+      h1 { font-size: 26px; }
+      .name { font-size: 24px; }
+      .thumb { width: 70px; height: 50px; }
+      .nextAvail .label {
+        font-size: 12px;
+      }
+      .nextAvail .value {
+        font-size: 18px;
+      }
+      .days {
+        gap: 8px;
+      }
+      .pill {
+        padding: 8px 6px;
+        min-height: 70px;
+      }
+      .pill .d1 { font-size: 13px; }
+      .pill .d2 { font-size: 18px; }
+      .pill .d3 { font-size: 13px; }
+      .pill .d4 { font-size: 13px; }
     }
   </style>
 </head>
 <body>
   <header>
-    <h1>Bubblegum Cars – Staff View</h1>
+    <h1>Bubblegum Cars — Staff View</h1>
   </header>
 
   <div class="controls">
@@ -66,113 +227,108 @@
   </div>
 
   <div class="wrap">
-    <div id="content"></div>
-    <div class="footer" id="updated"></div>
+    <div id="error" class="error" style="display:none;"></div>
+    <div id="cars"></div>
+    <footer id="updated"></footer>
   </div>
 
-<script>
-  const content = document.getElementById("content");
-  const updated = document.getElementById("updated");
-  const refreshBtn = document.getElementById("refreshBtn");
+  <script>
+    const carsEl = document.getElementById('cars');
+    const errEl = document.getElementById('error');
+    const updatedEl = document.getElementById('updated');
+    const refreshBtn = document.getElementById('refreshBtn');
 
-  function esc(s){
-    return String(s ?? "").replace(/[&<>"']/g, c => ({
-      "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
-    })[c]);
-  }
-
-  function statusClass(status){
-    if (status === "Available") return "green";
-    if (status === "Booked") return "red";
-    return "orange";
-  }
-
-  function renderDay(d){
-    const cls = statusClass(d.status);
-    const label = esc(d.label || d.date || "");
-    const status = esc(d.status);
-
-    if (d.status === "Booked" && d.bookedFrom && d.bookedUntil){
-      return `
-        <div class="day ${cls}">
-          <div class="top">${label}</div>
-          <div class="mid">${status}</div>
-          <div class="small">From ${esc(d.bookedFrom)} → ${esc(d.bookedUntil)}</div>
-        </div>
-      `;
+    function setError(msg) {
+      errEl.style.display = msg ? 'block' : 'none';
+      errEl.textContent = msg || '';
     }
 
-    if (d.status === "Heads-up"){
-      const back = d.backTime ? `<div class="small">Back ${esc(d.backTime)}</div>` : "";
-      const free = d.freeTime ? `<div class="small">Free ${esc(d.freeTime)}</div>` : "";
-      return `
-        <div class="day ${cls}">
-          <div class="top">${label}</div>
-          <div class="mid">Booked</div>
-          ${back}
-          ${free}
-        </div>
-      `;
+    function pillClass(status) {
+      if (status === 'Available') return 'green';
+      if (status === 'Booked') return 'red';
+      return 'orange'; // Heads-up
     }
 
-    return `
-      <div class="day ${cls}">
-        <div class="top">${label}</div>
-        <div class="mid">${status}</div>
-      </div>
-    `;
-  }
+    function pillInner(day) {
+      const line1 = `<div class="d1">${day.label || day.date}</div>`;
+      const line2 = `<div class="d2">${day.status}</div>`;
 
-  function renderCar(car){
-    const name = esc(car.name);
-    const img = esc(car.photo_url || "");
-    const next = esc(car.nextAvailable || "");
-    const daysHtml = (car.days || []).slice(0,4).map(renderDay).join("");
-
-    return `
-      <div class="car">
-        <div class="carTop">
-          <img class="thumb" src="${img}" alt="${name}" onerror="this.style.visibility='hidden'"/>
-          <div class="meta">
-            <div class="name">${name}</div>
-          </div>
-          <div class="next">
-            <div class="label">Next available</div>
-            <div class="value">${next}</div>
-          </div>
-        </div>
-        <div class="days">
-          ${daysHtml}
-        </div>
-      </div>
-    `;
-  }
-
-  async function load(){
-    content.innerHTML = "";
-    updated.textContent = "";
-
-    try{
-      const res = await fetch(`/api/availability?days=4&_=${Date.now()}`, { cache: "no-store" });
-      const data = await res.json();
-
-      if (!res.ok || data.error){
-        content.innerHTML = `<div class="error">${esc(data.error || "Error loading availability")}</div>`;
-        return;
+      // For red booked days, we want From -> Until if provided.
+      if (day.status === 'Booked' && day.bookedFrom && day.bookedUntil) {
+        return `${line1}${line2}<div class="d3">From ${day.bookedFrom} → ${day.bookedUntil}</div>`;
       }
 
-      const cars = data.cars || [];
-      content.innerHTML = cars.map(renderCar).join("");
+      // For orange heads-up days, show back/free times if provided.
+      if (day.status === 'Heads-up') {
+        const back = day.backTime ? `<div class="d3">Back ${day.backTime}</div>` : '';
+        const free = day.freeTime ? `<div class="d4">Free ${day.freeTime}</div>` : '';
+        return `${line1}${line2}${back}${free}`;
+      }
 
-      const now = new Date();
-      updated.textContent = `Last updated: ${now.toLocaleString()}`;
-    }catch(err){
-      content.innerHTML = `<div class="error">${esc(err.message || "Network error")}</div>`;
+      return `${line1}${line2}`;
     }
-  }
 
-  refreshBtn.addEventListener("click", load);
-  load();
-</script>
+    function render(data) {
+      carsEl.innerHTML = '';
+
+      for (const car of (data.cars || [])) {
+        const div = document.createElement('div');
+        div.className = 'car';
+
+        const days = (car.days || []).map(d => {
+          const pill = document.createElement('div');
+          pill.className = `pill ${pillClass(d.status)}`;
+          pill.innerHTML = pillInner(d);
+          return pill;
+        });
+
+        div.innerHTML = `
+          <div class="carTop">
+            <img class="thumb" src="${car.photo_url || ''}" alt="${car.name || ''}" />
+            <h2 class="name">${car.name || ''}</h2>
+            <div class="nextAvail">
+              <div class="label">Next available</div>
+              <div class="value">${car.nextAvailable || '—'}</div>
+            </div>
+          </div>
+          <div class="days"></div>
+        `;
+
+        div.querySelector('.days').append(...days);
+        carsEl.appendChild(div);
+      }
+
+      const ts = new Date();
+      updatedEl.textContent = `Last updated: ${ts.toLocaleString('en-AU')}`;
+    }
+
+    async function load() {
+      setError('');
+      carsEl.innerHTML = '';
+      updatedEl.textContent = '';
+
+      try {
+        const res = await fetch('/api/availability', { cache: 'no-store' });
+        const json = await res.json();
+
+        if (!res.ok) {
+          setError(json?.error || `HTTP ${res.status}`);
+          return;
+        }
+
+        if (json?.error) {
+          setError(json.error);
+          return;
+        }
+
+        render(json);
+      } catch (e) {
+        setError(String(e));
+      }
+    }
+
+    refreshBtn.addEventListener('click', load);
+    load();
+  </script>
 </body>
 </html>
