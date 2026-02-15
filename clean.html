@@ -195,6 +195,26 @@
       margin-top: 8px;
     }
 
+    .cleaned-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #3b82f6;
+      color: white;
+      padding: 6px 12px;
+      border-radius: 12px;
+      font-size: 14px;
+      font-weight: 800;
+      margin-top: 8px;
+    }
+
+    .button-group {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+
     .ready-button {
       background: var(--done);
       color: white;
@@ -205,7 +225,6 @@
       font-size: 14px;
       cursor: pointer;
       transition: all 0.2s;
-      margin-top: 8px;
     }
 
     .ready-button:hover {
@@ -217,6 +236,27 @@
       transform: scale(0.98);
     }
 
+    .cleaned-button {
+      background: #3b82f6;
+      color: white;
+      border: none;
+      padding: 10px 16px;
+      border-radius: 12px;
+      font-weight: 700;
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .cleaned-button:hover {
+      filter: brightness(1.1);
+      transform: scale(1.02);
+    }
+
+    .cleaned-button:active {
+      transform: scale(0.98);
+    }
+
     .ready-button.marked {
       background: #ccc;
       color: #666;
@@ -225,6 +265,12 @@
     .car-card.ready {
       border: 3px solid var(--done);
       background: #f0fdf4;
+    }
+
+    .car-card.cleaned {
+      border: 3px solid #3b82f6;
+      background: #eff6ff;
+      opacity: 0.8;
     }
 
     footer {
@@ -319,8 +365,8 @@
     const todayCountEl = document.getElementById('todayCount');
     const tomorrowCountEl = document.getElementById('tomorrowCount');
 
-    // LocalStorage functions for tracking ready-to-clean status
-    function getReadyStatus() {
+    // LocalStorage functions for tracking ready-to-clean and cleaned status
+    function getCleaningStatus() {
       try {
         const stored = localStorage.getItem('cleaningStatus');
         if (!stored) return {};
@@ -340,12 +386,13 @@
       }
     }
 
-    function setReadyStatus(carId, ready) {
+    function setCleaningStatus(carId, status) {
+      // status can be: 'ready', 'cleaned', or null (to clear)
       try {
-        const current = getReadyStatus();
-        if (ready) {
+        const current = getCleaningStatus();
+        if (status) {
           current[carId] = {
-            ready: true,
+            status: status,
             timestamp: Date.now()
           };
         } else {
@@ -357,9 +404,9 @@
       }
     }
 
-    function isCarReady(carId) {
-      const status = getReadyStatus();
-      return status[carId]?.ready || false;
+    function getCarStatus(carId) {
+      const status = getCleaningStatus();
+      return status[carId]?.status || null;
     }
 
     function setError(msg) {
@@ -390,9 +437,12 @@
       const card = document.createElement('div');
       card.className = 'car-card';
       
-      const isReady = isCarReady(car.id);
-      if (isReady) {
+      const carStatus = getCarStatus(car.id);
+      
+      if (carStatus === 'ready') {
         card.classList.add('ready');
+      } else if (carStatus === 'cleaned') {
+        card.classList.add('cleaned');
       }
 
       let nextRentalHTML = '';
@@ -412,9 +462,18 @@
         </div>
       ` : '';
 
-      const readyButtonHTML = isReady 
-        ? '<div class="ready-badge">✓ Ready to clean</div>'
-        : `<button class="ready-button" data-car-id="${car.id}">Mark as Ready to Clean</button>`;
+      // Three states: default, ready, cleaned
+      let statusHTML = '';
+      if (carStatus === 'cleaned') {
+        statusHTML = '<div class="cleaned-badge" data-car-id="' + car.id + '" style="cursor: pointer;" title="Click to unmark">✓ Cleaned</div>';
+      } else if (carStatus === 'ready') {
+        statusHTML = `
+          <div class="ready-badge" data-car-id="${car.id}" style="cursor: pointer;" title="Click to unmark">✓ Ready to clean</div>
+          <button class="cleaned-button" data-car-id="${car.id}">Mark as Cleaned</button>
+        `;
+      } else {
+        statusHTML = `<button class="ready-button" data-car-id="${car.id}">Mark as Ready to Clean</button>`;
+      }
 
       card.innerHTML = `
         <img class="thumb" src="${car.photo_url || ''}" alt="${car.name || ''}" />
@@ -428,28 +487,45 @@
             ${nextRentalHTML}
             ${labelHTML}
           </div>
-          ${readyButtonHTML}
+          <div class="button-group">
+            ${statusHTML}
+          </div>
         </div>
       `;
 
-      // Add event listener to ready button
-      const button = card.querySelector('.ready-button');
-      if (button) {
-        button.addEventListener('click', function() {
+      // Add event listeners
+      const readyButton = card.querySelector('.ready-button');
+      if (readyButton) {
+        readyButton.addEventListener('click', function() {
           const carId = this.getAttribute('data-car-id');
-          setReadyStatus(carId, true);
-          // Re-render to update UI
+          setCleaningStatus(carId, 'ready');
           load();
         });
       }
 
-      // Add click on badge to unmark
-      const badge = card.querySelector('.ready-badge');
-      if (badge) {
-        badge.style.cursor = 'pointer';
-        badge.title = 'Click to unmark';
-        badge.addEventListener('click', function() {
-          setReadyStatus(car.id, false);
+      const cleanedButton = card.querySelector('.cleaned-button');
+      if (cleanedButton) {
+        cleanedButton.addEventListener('click', function() {
+          const carId = this.getAttribute('data-car-id');
+          setCleaningStatus(carId, 'cleaned');
+          load();
+        });
+      }
+
+      const readyBadge = card.querySelector('.ready-badge');
+      if (readyBadge) {
+        readyBadge.addEventListener('click', function() {
+          const carId = this.getAttribute('data-car-id');
+          setCleaningStatus(carId, null);
+          load();
+        });
+      }
+
+      const cleanedBadge = card.querySelector('.cleaned-badge');
+      if (cleanedBadge) {
+        cleanedBadge.addEventListener('click', function() {
+          const carId = this.getAttribute('data-car-id');
+          setCleaningStatus(carId, null);
           load();
         });
       }
