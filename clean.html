@@ -301,7 +301,7 @@
         <h2 class="section-title">Tomorrow Morning</h2>
         <span class="section-badge today" id="tomorrowCount">0</span>
       </div>
-      <div class="subtitle" style="margin-bottom: 16px;">Plan ahead — will need cleaning tomorrow</div>
+      <div class="subtitle" style="margin-bottom: 16px;">Cars that returned today + cars returning tomorrow (need cleaning before next rental)</div>
       <div id="tomorrowCars"></div>
     </div>
 
@@ -386,7 +386,7 @@
       return `${hours}h ${diff % 60}m`;
     }
 
-    function createCarCard(car, returnTime, nextRental) {
+    function createCarCard(car, returnTime, nextRental, label) {
       const card = document.createElement('div');
       card.className = 'car-card';
       
@@ -406,6 +406,12 @@
         `;
       }
 
+      const labelHTML = label ? `
+        <div class="detail-row">
+          <span class="detail-label">${label}</span>
+        </div>
+      ` : '';
+
       const readyButtonHTML = isReady 
         ? '<div class="ready-badge">✓ Ready to clean</div>'
         : `<button class="ready-button" data-car-id="${car.id}">Mark as Ready to Clean</button>`;
@@ -420,6 +426,7 @@
               <span class="detail-value">${returnTime}</span>
             </div>
             ${nextRentalHTML}
+            ${labelHTML}
           </div>
           ${readyButtonHTML}
         </div>
@@ -476,7 +483,7 @@
           // Skip if no day or not a heads-up/booked day
           if (!day || day.status === 'Available') continue;
 
-          // Priority: Cars returned yesterday after 6pm
+          // Priority: Cars returned yesterday after 6pm (need cleaning ASAP before 9am)
           if (dayIndex === 0 && day.backTime) {
             const backTimeMinutes = parseTime(day.backTime);
             // If returned after 6pm (18:00), it needs cleaning before 9am
@@ -489,10 +496,10 @@
             }
           }
 
-          // Today: Cars returning during the day (before current time has passed)
+          // Returning Today: Cars that haven't returned yet (future returns today)
           if (day.date === todayDate && day.backTime) {
             const backTimeMinutes = parseTime(day.backTime);
-            // Only show if it hasn't returned yet and returns before end of day
+            // Only show if it hasn't returned yet
             if (backTimeMinutes > currentTime) {
               todayCars.push({
                 car,
@@ -500,42 +507,56 @@
                 nextRental: day.freeTime || null
               });
             }
-            // Also add to tomorrow if returning after 6pm today
+          }
+
+          // Tomorrow Morning: ALL cars that returned today (any time) need cleaning tomorrow
+          if (day.date === todayDate && day.backTime) {
+            const backTimeMinutes = parseTime(day.backTime);
+            // Include ALL cars that returned today (already returned or returning later)
+            tomorrowCars.push({
+              car,
+              returnTime: day.backTime,
+              nextRental: car.days[1]?.bookedFrom || null, // Tomorrow's first rental
+              label: backTimeMinutes <= currentTime ? 'Returned today' : 'Returns today'
+            });
+          }
+
+          // Tomorrow Morning: Also include cars returning tomorrow after 6pm
+          if (day.date === tomorrowDate && day.backTime) {
+            const backTimeMinutes = parseTime(day.backTime);
+            // If returning after 6pm tomorrow, will need cleaning the day after
             if (backTimeMinutes >= 18 * 60) {
               tomorrowCars.push({
                 car,
                 returnTime: day.backTime,
-                nextRental: car.days[1]?.bookedFrom || null
-              });
-            }
-          }
-
-          // Tomorrow: Cars returning tomorrow that will need cleaning
-          if (day.date === tomorrowDate && day.backTime) {
-            const backTimeMinutes = parseTime(day.backTime);
-            // Show all cars returning tomorrow before 6pm (they'll be cleaned same day)
-            // or during the day
-            if (backTimeMinutes < 18 * 60) {
-              tomorrowCars.push({
-                car,
-                returnTime: day.backTime,
-                nextRental: day.freeTime || null
+                nextRental: car.days[2]?.bookedFrom || null,
+                label: 'Returns tomorrow'
               });
             }
           }
         }
       }
 
+      // Remove duplicates from tomorrow (car might be in there twice)
+      const tomorrowCarsUnique = [];
+      const seenCarIds = new Set();
+      for (const item of tomorrowCars) {
+        if (!seenCarIds.has(item.car.id)) {
+          seenCarIds.add(item.car.id);
+          tomorrowCarsUnique.push(item);
+        }
+      }
+
       // Sort by return time
       todayCars.sort((a, b) => parseTime(a.returnTime) - parseTime(b.returnTime));
-      tomorrowCars.sort((a, b) => parseTime(a.returnTime) - parseTime(b.returnTime));
+      tomorrowCarsUnique.sort((a, b) => parseTime(a.returnTime) - parseTime(b.returnTime));
 
       // Render priority cars
       if (priorityCars.length === 0) {
         priorityCarsEl.innerHTML = '<div class="empty-message">✅ No cars need urgent cleaning</div>';
       } else {
         for (const item of priorityCars) {
-          priorityCarsEl.appendChild(createCarCard(item.car, item.returnTime, item.nextRental));
+          priorityCarsEl.appendChild(createCarCard(item.car, item.returnTime, item.nextRental, item.label));
         }
       }
 
@@ -544,23 +565,23 @@
         todayCarsEl.innerHTML = '<div class="empty-message">No cars returning later today</div>';
       } else {
         for (const item of todayCars) {
-          todayCarsEl.appendChild(createCarCard(item.car, item.returnTime, item.nextRental));
+          todayCarsEl.appendChild(createCarCard(item.car, item.returnTime, item.nextRental, item.label));
         }
       }
 
       // Render tomorrow's cars
-      if (tomorrowCars.length === 0) {
+      if (tomorrowCarsUnique.length === 0) {
         tomorrowCarsEl.innerHTML = '<div class="empty-message">No cars to clean tomorrow morning</div>';
       } else {
-        for (const item of tomorrowCars) {
-          tomorrowCarsEl.appendChild(createCarCard(item.car, item.returnTime, item.nextRental));
+        for (const item of tomorrowCarsUnique) {
+          tomorrowCarsEl.appendChild(createCarCard(item.car, item.returnTime, item.nextRental, item.label));
         }
       }
 
       // Update counts
       priorityCountEl.textContent = priorityCars.length;
       todayCountEl.textContent = todayCars.length;
-      tomorrowCountEl.textContent = tomorrowCars.length;
+      tomorrowCountEl.textContent = tomorrowCarsUnique.length;
 
       const ts = new Date();
       updatedEl.textContent = `Last updated: ${ts.toLocaleString('en-AU')}`;
