@@ -530,23 +530,14 @@ export default async function handler(req, res) {
           // Calculate the gap between this booking ending and next one starting
           const gapMs = nextInterval.startMs - roundedEndMs;
           
-          // If gap is less than minimum rentable, show available time but warn about next booking
-          if (gapMs > 0 && gapMs < minRentableGapHours * 3600000) {
-            const availableTime = fmtNextAvailable(new Date(roundedEndMs), timezone);
-            const nextBookingTime = fmtTime(new Date(nextInterval.startMs), timezone);
-            nextAvailable = `${availableTime} (booked ${nextBookingTime})`;
-            foundAvailableSlot = true;
-            break;
-          }
-          
-          // If next booking starts after our rounded time with sufficient gap, we have a rentable slot
+          // Only consider this slot available if gap is at least minimum rentable hours
           if (gapMs >= minRentableGapHours * 3600000) {
             nextAvailable = fmtNextAvailable(new Date(roundedEndMs), timezone);
             foundAvailableSlot = true;
             break;
           }
           
-          // Otherwise, the rounded time conflicts with next booking, so continue to next interval
+          // Gap too short, skip to next interval
         }
 
         // If we're outside business hours, not currently booked, and have no future bookings
@@ -591,30 +582,46 @@ export default async function handler(req, res) {
           const roundedEndMs = roundToBusinessHours(first.endMs, timezone, offsetMinutes);
           
           // Check if the rounded time falls on the SAME day or NEXT day
-          // If it rounds to next day, this day should be RED (fully booked), not orange
-          const endDayStart = d.startUtcMs;
           const endDayEnd = d.endUtcMs;
           
-          // If rounded time is still within this day, show Heads-up (orange)
-          if (roundedEndMs < endDayEnd) {
+          // If rounded time is NOT within this day, show as fully Booked (red)
+          if (roundedEndMs >= endDayEnd) {
             return {
               date: d.date,
               label: d.label,
-              status: "Heads-up",
+              status: "Booked",
               bookedFrom,
               bookedUntil,
-              backTime: fmtTime(first.stopsRaw, timezone),
-              freeTime: fmtTime(new Date(roundedEndMs), timezone),
             };
           }
           
-          // Otherwise, rounded to next day = show as fully Booked (red)
+          // Find this booking in the full intervals list to check the next one
+          const firstIndexInIvals = ivals.findIndex(iv => iv.startMs === first.startMs && iv.endMs === first.endMs);
+          const nextBooking = firstIndexInIvals >= 0 ? ivals[firstIndexInIvals + 1] : null;
+          
+          if (nextBooking) {
+            const gapMs = nextBooking.startMs - roundedEndMs;
+            // If gap is less than minimum rentable, show as fully booked (red)
+            if (gapMs < minRentableGapHours * 3600000) {
+              return {
+                date: d.date,
+                label: d.label,
+                status: "Booked",
+                bookedFrom,
+                bookedUntil,
+              };
+            }
+          }
+          
+          // Otherwise show Heads-up (orange) with back/free times
           return {
             date: d.date,
             label: d.label,
-            status: "Booked",
+            status: "Heads-up",
             bookedFrom,
             bookedUntil,
+            backTime: fmtTime(first.stopsRaw, timezone),
+            freeTime: fmtTime(new Date(roundedEndMs), timezone),
           };
         }
 
