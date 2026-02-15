@@ -469,7 +469,7 @@
         // If cleaned, show green badge and ready button
         statusHTML = `
           <div class="cleaned-badge" data-car-id="${car.id}" style="cursor: pointer;" title="Click to unmark">✓ Cleaned</div>
-          <button class="ready-button" data-car-id="${car.id}">Mark as Ready</button>
+          <button class="ready-button" data-car-id="${car.id}">Mark as Ready to Clean</button>
         `;
       } else if (carStatus === 'ready') {
         // If ready, show blue badge and cleaned button
@@ -480,7 +480,7 @@
       } else {
         // Default: show both buttons
         statusHTML = `
-          <button class="ready-button" data-car-id="${car.id}">Mark as Ready</button>
+          <button class="ready-button" data-car-id="${car.id}">Mark as Ready to Clean</button>
           <button class="cleaned-button" data-car-id="${car.id}">Mark as Cleaned</button>
         `;
       }
