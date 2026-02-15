@@ -186,7 +186,7 @@
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      background: var(--done);
+      background: #3b82f6;
       color: white;
       padding: 6px 12px;
       border-radius: 12px;
@@ -199,7 +199,7 @@
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      background: #3b82f6;
+      background: var(--done);
       color: white;
       padding: 6px 12px;
       border-radius: 12px;
@@ -216,7 +216,7 @@
     }
 
     .ready-button {
-      background: var(--done);
+      background: #3b82f6;
       color: white;
       border: none;
       padding: 10px 16px;
@@ -237,7 +237,7 @@
     }
 
     .cleaned-button {
-      background: #3b82f6;
+      background: var(--done);
       color: white;
       border: none;
       padding: 10px 16px;
@@ -263,13 +263,13 @@
     }
 
     .car-card.ready {
-      border: 3px solid var(--done);
-      background: #f0fdf4;
+      border: 3px solid #3b82f6;
+      background: #eff6ff;
     }
 
     .car-card.cleaned {
-      border: 3px solid #3b82f6;
-      background: #eff6ff;
+      border: 3px solid var(--done);
+      background: #f0fdf4;
       opacity: 0.8;
     }
 
@@ -462,17 +462,27 @@
         </div>
       ` : '';
 
-      // Three states: default, ready, cleaned
+      // Always show both buttons separately
       let statusHTML = '';
+      
       if (carStatus === 'cleaned') {
-        statusHTML = '<div class="cleaned-badge" data-car-id="' + car.id + '" style="cursor: pointer;" title="Click to unmark">✓ Cleaned</div>';
+        // If cleaned, show green badge and ready button
+        statusHTML = `
+          <div class="cleaned-badge" data-car-id="${car.id}" style="cursor: pointer;" title="Click to unmark">✓ Cleaned</div>
+          <button class="ready-button" data-car-id="${car.id}">Mark as Ready</button>
+        `;
       } else if (carStatus === 'ready') {
+        // If ready, show blue badge and cleaned button
         statusHTML = `
           <div class="ready-badge" data-car-id="${car.id}" style="cursor: pointer;" title="Click to unmark">✓ Ready to clean</div>
           <button class="cleaned-button" data-car-id="${car.id}">Mark as Cleaned</button>
         `;
       } else {
-        statusHTML = `<button class="ready-button" data-car-id="${car.id}">Mark as Ready to Clean</button>`;
+        // Default: show both buttons
+        statusHTML = `
+          <button class="ready-button" data-car-id="${car.id}">Mark as Ready</button>
+          <button class="cleaned-button" data-car-id="${car.id}">Mark as Cleaned</button>
+        `;
       }
 
       card.innerHTML = `
