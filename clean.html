@@ -4,6 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Bubblegum Cars — Cleaning Schedule</title>
+  
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
+  
   <style>
     :root {
       --bg: #f4f5f7;
@@ -355,6 +360,32 @@
   </div>
 
   <script>
+    // Firebase Configuration
+    const firebaseConfig = {
+      apiKey: "AIzaSyCxiEJiMeCesbzLzY9aRX6LExpoGzu5sw8",
+      authDomain: "clean-969d4.firebaseapp.com",
+      databaseURL: "https://clean-969d4-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "clean-969d4",
+      storageBucket: "clean-969d4.firebasestorage.app",
+      messagingSenderId: "43890146586",
+      appId: "1:43890146586:web:29331b94f6aed7581e80a3",
+      measurementId: "G-5G753LRVL7"
+    };
+
+    // Initialize Firebase
+    let database = null;
+    let firebaseInitialized = false;
+
+    try {
+      firebase.initializeApp(firebaseConfig);
+      database = firebase.database();
+      firebaseInitialized = true;
+      console.log('Firebase initialized successfully');
+    } catch (error) {
+      console.error('Firebase initialization failed:', error);
+      console.log('Falling back to localStorage');
+    }
+
     const errEl = document.getElementById('error');
     const updatedEl = document.getElementById('updated');
     const refreshBtn = document.getElementById('refreshBtn');
@@ -365,8 +396,85 @@
     const todayCountEl = document.getElementById('todayCount');
     const tomorrowCountEl = document.getElementById('tomorrowCount');
 
-    // LocalStorage functions for tracking ready-to-clean and cleaned status
-    function getCleaningStatus() {
+    // Cache for cleaning status (updated in real-time from Firebase)
+    let cleaningStatusCache = {};
+
+    // Firebase functions for tracking ready-to-clean and cleaned status
+    async function initializeFirebaseListener() {
+      if (!firebaseInitialized || !database) return;
+
+      const statusRef = database.ref('cleaningStatus');
+      
+      // Listen for real-time updates
+      statusRef.on('value', (snapshot) => {
+        const data = snapshot.val() || {};
+        
+        // Clean up old entries (older than 24 hours)
+        const now = Date.now();
+        const cleaned = {};
+        let needsUpdate = false;
+
+        for (const [carId, entry] of Object.entries(data)) {
+          if (now - entry.timestamp < 24 * 60 * 60 * 1000) {
+            cleaned[carId] = entry;
+          } else {
+            needsUpdate = true;
+          }
+        }
+
+        cleaningStatusCache = cleaned;
+
+        // If we cleaned up old entries, update Firebase
+        if (needsUpdate) {
+          statusRef.set(cleaned).catch(err => console.error('Cleanup error:', err));
+        }
+
+        // Re-render when status changes
+        if (window.lastLoadedData) {
+          render(window.lastLoadedData);
+        }
+      });
+    }
+
+    async function setCleaningStatus(carId, status) {
+      // status can be: 'ready', 'cleaned', or null (to clear)
+      
+      if (firebaseInitialized && database) {
+        // Use Firebase
+        try {
+          const statusRef = database.ref('cleaningStatus/' + carId);
+          
+          if (status) {
+            await statusRef.set({
+              status: status,
+              timestamp: Date.now()
+            });
+          } else {
+            await statusRef.remove();
+          }
+        } catch (error) {
+          console.error('Firebase error:', error);
+          // Fallback to localStorage
+          setCleaningStatusLocal(carId, status);
+        }
+      } else {
+        // Fallback to localStorage
+        setCleaningStatusLocal(carId, status);
+      }
+    }
+
+    function getCarStatus(carId) {
+      if (firebaseInitialized && database) {
+        // Use cached Firebase data
+        return cleaningStatusCache[carId]?.status || null;
+      } else {
+        // Fallback to localStorage
+        return getCarStatusLocal(carId);
+      }
+    }
+
+    // LocalStorage fallback functions
+    function getCleaningStatusLocal() {
       try {
         const stored = localStorage.getItem('cleaningStatus');
         if (!stored) return {};
@@ -386,10 +494,9 @@
       }
     }
 
-    function setCleaningStatus(carId, status) {
-      // status can be: 'ready', 'cleaned', or null (to clear)
+    function setCleaningStatusLocal(carId, status) {
       try {
-        const current = getCleaningStatus();
+        const current = getCleaningStatusLocal();
         if (status) {
           current[carId] = {
             status: status,
@@ -404,8 +511,8 @@
       }
     }
 
-    function getCarStatus(carId) {
-      const status = getCleaningStatus();
+    function getCarStatusLocal(carId) {
+      const status = getCleaningStatusLocal();
       return status[carId]?.status || null;
     }
 
@@ -509,7 +616,7 @@
         readyButton.addEventListener('click', function() {
           const carId = this.getAttribute('data-car-id');
           setCleaningStatus(carId, 'ready');
-          load();
+          // No need to call load() - Firebase listener will auto-update
         });
       }
 
@@ -518,7 +625,7 @@
         cleanedButton.addEventListener('click', function() {
           const carId = this.getAttribute('data-car-id');
           setCleaningStatus(carId, 'cleaned');
-          load();
+          // No need to call load() - Firebase listener will auto-update
         });
       }
 
@@ -527,7 +634,7 @@
         readyBadge.addEventListener('click', function() {
           const carId = this.getAttribute('data-car-id');
           setCleaningStatus(carId, null);
-          load();
+          // No need to call load() - Firebase listener will auto-update
         });
       }
 
@@ -536,7 +643,7 @@
         cleanedBadge.addEventListener('click', function() {
           const carId = this.getAttribute('data-car-id');
           setCleaningStatus(carId, null);
-          load();
+          // No need to call load() - Firebase listener will auto-update
         });
       }
 
@@ -544,6 +651,9 @@
     }
 
     function render(data) {
+      // Save data for Firebase listener re-renders
+      window.lastLoadedData = data;
+      
       priorityCarsEl.innerHTML = '';
       todayCarsEl.innerHTML = '';
       tomorrowCarsEl.innerHTML = '';
@@ -706,6 +816,9 @@
     }
 
     refreshBtn.addEventListener('click', load);
+    
+    // Initialize Firebase listener and load data
+    initializeFirebaseListener();
     load();
     
     // Auto-refresh every 2 minutes
