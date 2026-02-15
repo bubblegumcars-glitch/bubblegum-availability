@@ -1,25 +1,29 @@
 // api/availability.js
 // Bubblegum Cars staff availability (Booqable API v4)
 //
-// ✅ Correct v4 pagination: page[size]=.. & page[number]=.. (NOT per_page/page=1)
-// ✅ Robust mapping: plannings -> (inventory_level OR item) -> product
-// ✅ Uses /settings/current timezone + timezone_offset to interpret offset-less datetimes
-// ✅ Adds debug counters to see why anything goes “all green”
-// ✅ Adds "min rentable gap" logic for nextAvailable
+// Fixes:
+/// ✅ inventory_levels requires filter[from], filter[till] (your error)
+/// ✅ builds query strings via URLSearchParams so filters cannot be dropped
+/// ✅ correct v4 pagination: page[size], page[number]
+/// ✅ uses /settings/current timezone + timezone_offset for offset-less datetimes
+/// ✅ "Available now" is false if ANY planning overlaps now
+/// ✅ "Next available" respects MIN_RENTABLE_GAP_HOURS (default 4h)
+//
+// Notes:
+/// - Brisbane has no DST, so timezone_offset minutes is stable.
 
 const RANGE_DAYS = 4;
 const MIN_RENTABLE_GAP_HOURS = 4;
 
-// v4 uses page[size], page[number]
 const PAGE_SIZE = 100;
 
-// keep these conservative to reduce 429s
+// caps to avoid runaway + 429 storms
 const MAX_PRODUCTS_PAGES = 10;
 const MAX_LEVELS_PAGES = 20;
 const MAX_ITEMS_PAGES = 20;
 const MAX_PLANNINGS_PAGES = 20;
 
-// Light cache to reduce 429s (Vercel serverless may reuse runtime briefly)
+// tiny cache to reduce 429s
 let _cache = { at: 0, payload: null };
 const CACHE_MS = 15_000;
 
@@ -42,9 +46,9 @@ function hasOffset(str) {
   return /([zZ]|[+\-]\d{2}:\d{2})$/.test(str);
 }
 
-// Parse Booqable datetimes:
-// - if has offset/Z -> normal Date()
-// - if no offset -> interpret as "company local time", using timezone_offset (minutes)
+// Parse Booqable datetime strings:
+// - If has offset/Z -> Date(str)
+// - If no offset -> treat as "company local", convert to UTC using timezone_offset minutes
 function parseBooqableDate(str, accountOffsetMinutes) {
   if (!str) return null;
 
@@ -53,11 +57,9 @@ function parseBooqableDate(str, accountOffsetMinutes) {
     return isNaN(d.getTime()) ? null : d;
   }
 
-  // Treat naive string as local time in account timezone.
-  // Convert to UTC by subtracting the offset.
+  // Interpret naive string as local time -> convert to UTC by subtracting offset
   const assumedUtc = new Date(str + "Z");
   if (isNaN(assumedUtc.getTime())) return null;
-
   return new Date(assumedUtc.getTime() - accountOffsetMinutes * 60 * 1000);
 }
 
@@ -65,8 +67,7 @@ function overlap(aStart, aEnd, bStart, bEnd) {
   return aStart < bEnd && bStart < aEnd;
 }
 
-// Build UTC ms for "local midnight" using fixed offset (timezone_offset minutes).
-// Brisbane has no DST, so this is safe for you.
+// Build UTC ms for "local midnight" using a fixed offset (minutes).
 function localMidnightUtcMs(baseUtcMs, offsetMinutes, addDays) {
   const offMs = offsetMinutes * 60 * 1000;
   const localMs = baseUtcMs + offMs;
@@ -77,7 +78,7 @@ function localMidnightUtcMs(baseUtcMs, offsetMinutes, addDays) {
   const d = local.getUTCDate() + addDays;
 
   const localMidnightMs = Date.UTC(y, m, d, 0, 0, 0, 0);
-  return localMidnightMs - offMs; // back to UTC
+  return localMidnightMs - offMs;
 }
 
 function fmtDayLabel(dateObj, timezone) {
@@ -102,8 +103,24 @@ function fmtNextAvailable(dateObj, timezone) {
   return `${fmtDayLabel(dateObj, timezone)} ${fmtTime(dateObj, timezone)}`;
 }
 
+function buildPath(pathname, paramsObj) {
+  const sp = new URLSearchParams();
+  for (const [k, v] of Object.entries(paramsObj || {})) {
+    if (v === undefined || v === null || v === "") continue;
+    sp.set(k, String(v));
+  }
+  const qs = sp.toString();
+  return qs ? `${pathname}?${qs}` : pathname;
+}
+
+function addPaging(pathWithMaybeQuery, pageNumber) {
+  const join = pathWithMaybeQuery.includes("?") ? "&" : "?";
+  return `${pathWithMaybeQuery}${join}page[size]=${PAGE_SIZE}&page[number]=${pageNumber}`;
+}
+
 export default async function handler(req, res) {
   try {
+    // cache
     const now = Date.now();
     if (_cache.payload && now - _cache.at < CACHE_MS) {
       return sendJson(res, 200, _cache.payload, 10);
@@ -113,7 +130,9 @@ export default async function handler(req, res) {
     const token = process.env.BOOQABLE_ACCESS_TOKEN;
 
     if (!company || !token) {
-      return sendJson(res, 500, { error: "Missing BOOQABLE_COMPANY_SLUG or BOOQABLE_ACCESS_TOKEN" });
+      return sendJson(res, 500, {
+        error: "Missing BOOQABLE_COMPANY_SLUG or BOOQABLE_ACCESS_TOKEN",
+      });
     }
 
     async function booqable(path, attempt = 0) {
@@ -121,42 +140,34 @@ export default async function handler(req, res) {
       const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
 
       if (r.status === 429 && attempt < 6) {
-        const wait = 500 * Math.pow(2, attempt); // 0.5s, 1s, 2s, 4s...
+        const wait = 500 * Math.pow(2, attempt);
         await sleep(wait);
         return booqable(path, attempt + 1);
       }
 
       if (!r.ok) {
         const t = await r.text();
+        // IMPORTANT: include exact path here so we can see if filters are missing
         throw new Error(`Booqable error ${r.status} for ${path} :: ${t}`);
       }
-      return r.json();
-    }
 
-    function pagedPath(basePath, pageNumber) {
-      const join = basePath.includes("?") ? "&" : "?";
-      return `${basePath}${join}page[size]=${PAGE_SIZE}&page[number]=${pageNumber}`;
+      return r.json();
     }
 
     const debug = {
       timezone: null,
       timezone_offset_minutes: null,
-
+      window_from_utc: null,
+      window_till_utc: null,
+      inventory_levels_path_example: null,
       fetchedProducts: 0,
       carProducts: 0,
-
       fetchedInventoryLevels: 0,
-      mappedInvLevelsToCars: 0,
-
       fetchedItems: 0,
-      mappedItemsToCars: 0,
-
       fetchedPlannings: 0,
       planningsMappedToCars: 0,
       planningsDroppedNoRel: 0,
       planningsDroppedUnknownCar: 0,
-
-      intervalsTotal: 0,
     };
 
     // 1) Settings
@@ -167,10 +178,22 @@ export default async function handler(req, res) {
     debug.timezone = timezone;
     debug.timezone_offset_minutes = offsetMinutes;
 
-    // 2) Products (cars only)
+    // 2) Build a padded window so cross-day bookings are included
+    const baseUtcMs = Date.now();
+    const windowStartUtcMs = localMidnightUtcMs(baseUtcMs, offsetMinutes, 0) - 2 * 86400000;
+    const windowEndUtcMs = localMidnightUtcMs(baseUtcMs, offsetMinutes, RANGE_DAYS + 2);
+
+    const fromISO = new Date(windowStartUtcMs).toISOString();
+    const tillISO = new Date(windowEndUtcMs).toISOString();
+
+    debug.window_from_utc = fromISO;
+    debug.window_till_utc = tillISO;
+
+    // 3) Products
     const products = [];
     for (let page = 1; page <= MAX_PRODUCTS_PAGES; page++) {
-      const out = await booqable(pagedPath("/products", page));
+      const path = addPaging("/products", page);
+      const out = await booqable(path);
       const rows = out?.data || [];
       products.push(...rows);
       if (rows.length < PAGE_SIZE) break;
@@ -183,9 +206,7 @@ export default async function handler(req, res) {
         return (
           a.product_type === "rental" &&
           a.trackable === true &&
-          a.show_in_store === true &&
-          a.has_variations === false &&
-          a.variation === false
+          a.show_in_store === true
         );
       })
       .map((p) => ({
@@ -201,55 +222,69 @@ export default async function handler(req, res) {
 
     const carById = new Map(cars.map((c) => [c.id, c]));
 
-    // 3) Inventory levels: map inventory_level_id -> product_id
+    // 4) Day tiles
+    const days = [];
+    for (let i = 0; i < RANGE_DAYS; i++) {
+      const startUtcMs = localMidnightUtcMs(baseUtcMs, offsetMinutes, i);
+      const endUtcMs = startUtcMs + 86400000;
+      days.push({
+        startUtcMs,
+        endUtcMs,
+        label: fmtDayLabel(new Date(startUtcMs), timezone),
+        date: new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(new Date(startUtcMs)),
+      });
+    }
+
+    // 5) inventory_levels (MUST include filter[from], filter[till])
     const invToProduct = new Map();
+
+    const invBase = buildPath("/inventory_levels", {
+      "filter[from]": fromISO,
+      "filter[till]": tillISO,
+    });
+
+    // store an example so you can see it in /api/availability output
+    debug.inventory_levels_path_example = addPaging(invBase, 1);
+
     for (let page = 1; page <= MAX_LEVELS_PAGES; page++) {
-      const out = await booqable(pagedPath("/inventory_levels", page));
+      const path = addPaging(invBase, page);
+      const out = await booqable(path);
       const rows = out?.data || [];
       debug.fetchedInventoryLevels += rows.length;
 
       for (const lvl of rows) {
         const invId = lvl.id;
         const productId = lvl?.relationships?.product?.data?.id;
-        if (invId && productId) {
-          invToProduct.set(invId, productId);
-          if (carById.has(productId)) debug.mappedInvLevelsToCars++;
-        }
+        if (invId && productId) invToProduct.set(invId, productId);
       }
 
       if (rows.length < PAGE_SIZE) break;
     }
 
-    // 4) Items: map item_id -> product_id
+    // 6) items (item_id -> product_id)
     const itemToProduct = new Map();
     for (let page = 1; page <= MAX_ITEMS_PAGES; page++) {
-      const out = await booqable(pagedPath("/items", page));
+      const path = addPaging("/items", page);
+      const out = await booqable(path);
       const rows = out?.data || [];
       debug.fetchedItems += rows.length;
 
       for (const it of rows) {
         const itemId = it.id;
         const productId = it?.relationships?.product?.data?.id;
-        if (itemId && productId) {
-          itemToProduct.set(itemId, productId);
-          if (carById.has(productId)) debug.mappedItemsToCars++;
-        }
+        if (itemId && productId) itemToProduct.set(itemId, productId);
       }
 
       if (rows.length < PAGE_SIZE) break;
     }
 
-    // 5) Plannings: build booked intervals per product via inventory_level OR item relationship
+    // 7) plannings -> intervals per car
     const intervalsByProduct = new Map();
     for (const c of cars) intervalsByProduct.set(c.id, []);
 
-    const baseUtcMs = Date.now();
-    const windowStartUtcMs = localMidnightUtcMs(baseUtcMs, offsetMinutes, 0) - 2 * 86400000;
-    const windowEndUtcMs = localMidnightUtcMs(baseUtcMs, offsetMinutes, RANGE_DAYS + 2);
-
     for (let page = 1; page <= MAX_PLANNINGS_PAGES; page++) {
-      // include is optional; fine if ignored
-      const out = await booqable(pagedPath("/plannings?include=inventory_level,item", page));
+      const path = addPaging("/plannings?include=inventory_level,item", page);
+      const out = await booqable(path);
       const rows = out?.data || [];
       debug.fetchedPlannings += rows.length;
 
@@ -271,24 +306,19 @@ export default async function handler(req, res) {
           continue;
         }
 
-        const startsRaw = pl?.attributes?.starts_at;
-        const stopsRaw = pl?.attributes?.stops_at;
-
-        const starts = parseBooqableDate(startsRaw, offsetMinutes);
-        const stops = parseBooqableDate(stopsRaw, offsetMinutes);
+        const starts = parseBooqableDate(pl?.attributes?.starts_at, offsetMinutes);
+        const stops = parseBooqableDate(pl?.attributes?.stops_at, offsetMinutes);
         if (!starts || !stops) continue;
 
         let startMs = starts.getTime();
         let endMs = stops.getTime();
 
+        // restrict to our padded window
         if (!overlap(startMs, endMs, windowStartUtcMs, windowEndUtcMs)) continue;
 
         const car = carById.get(productId);
-        const bufBeforeMs = (car.buffer_before_s || 0) * 1000;
-        const bufAfterMs = (car.buffer_after_s || 0) * 1000;
-
-        startMs -= bufBeforeMs;
-        endMs += bufAfterMs;
+        startMs -= (car.buffer_before_s || 0) * 1000;
+        endMs += (car.buffer_after_s || 0) * 1000;
 
         intervalsByProduct.get(productId).push({
           startMs,
@@ -303,25 +333,9 @@ export default async function handler(req, res) {
       if (rows.length < PAGE_SIZE) break;
     }
 
-    for (const arr of intervalsByProduct.values()) {
-      arr.sort((a, b) => a.startMs - b.startMs);
-      debug.intervalsTotal += arr.length;
-    }
+    for (const arr of intervalsByProduct.values()) arr.sort((a, b) => a.startMs - b.startMs);
 
-    // 6) Days array (local midnights)
-    const days = [];
-    for (let i = 0; i < RANGE_DAYS; i++) {
-      const startUtcMs = localMidnightUtcMs(baseUtcMs, offsetMinutes, i);
-      const endUtcMs = startUtcMs + 86400000;
-      days.push({
-        startUtcMs,
-        endUtcMs,
-        label: fmtDayLabel(new Date(startUtcMs), timezone),
-        date: new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(new Date(startUtcMs)), // YYYY-MM-DD
-      });
-    }
-
-    // 7) Build per-car tiles + nextAvailable
+    // 8) output
     const nowMs = Date.now();
     const outCars = [];
 
@@ -331,24 +345,21 @@ export default async function handler(req, res) {
       const bookedNow = ivals.some((iv) => nowMs >= iv.startMs && nowMs < iv.endMs);
 
       let nextAvailable = "Available now";
-
       if (bookedNow) {
         nextAvailable = null;
-
         for (let i = 0; i < ivals.length; i++) {
           const iv = ivals[i];
           if (nowMs < iv.endMs) {
             const nextStart = ivals[i + 1]?.startMs ?? null;
             const gapMs = nextStart ? nextStart - iv.endMs : null;
 
-            // If there’s another booking soon, only show "next available" if the gap is rentable.
+            // only “rentable” gap counts
             if (gapMs === null || gapMs >= MIN_RENTABLE_GAP_HOURS * 3600000) {
               nextAvailable = fmtNextAvailable(new Date(iv.endMs), timezone);
               break;
             }
           }
         }
-
         if (!nextAvailable) {
           const last = ivals[ivals.length - 1];
           nextAvailable = last ? fmtNextAvailable(new Date(last.endMs), timezone) : "Unknown";
@@ -356,15 +367,10 @@ export default async function handler(req, res) {
       }
 
       const tiles = days.map((d) => {
-        const overlaps = ivals.filter((iv) => overlap(iv.startMs, iv.endMs, d.startUtcMs, d.endUtcMs));
+        const overlapsForDay = ivals.filter((iv) => overlap(iv.startMs, iv.endMs, d.startUtcMs, d.endUtcMs));
+        if (overlapsForDay.length === 0) return { date: d.date, label: d.label, status: "Available" };
 
-        if (overlaps.length === 0) {
-          return { date: d.date, label: d.label, status: "Available" };
-        }
-
-        // show first overlap for that day (simple)
-        const first = overlaps[0];
-
+        const first = overlapsForDay[0];
         return {
           date: d.date,
           label: d.label,
@@ -390,14 +396,14 @@ export default async function handler(req, res) {
       timezone_offset_minutes: offsetMinutes,
       rangeDays: RANGE_DAYS,
       minRentableGapHours: MIN_RENTABLE_GAP_HOURS,
+      days: days.map((d) => ({ date: d.date, label: d.label })),
       cars: outCars,
       debug,
       note:
-        "If everything is green, check debug.fetchedPlannings and debug.planningsMappedToCars. Mapping supports inventory_level OR item relationships.",
+        "If you still see the inventory_levels filter error, check debug.inventory_levels_path_example in /api/availability output — it must contain filter[from] and filter[till].",
     };
 
     _cache = { at: Date.now(), payload };
-
     return sendJson(res, 200, payload, 10);
   } catch (e) {
     return sendJson(res, 500, { error: e.message });
