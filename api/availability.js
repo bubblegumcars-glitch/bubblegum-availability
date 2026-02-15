@@ -186,6 +186,8 @@ export default async function handler(req, res) {
       planningsDroppedNoRel: 0,
       planningsDroppedUnknownCar: 0,
       planningsDateRange: null,
+      sampleItemStructure: null,  // NEW: will capture first item's structure
+      samplePlanningStructure: null,  // NEW: will capture first planning's structure
     };
 
     // 1) Settings (timezone + offset)
@@ -338,12 +340,18 @@ export default async function handler(req, res) {
         if (prodId) return prodId;
       }
 
-      // C) item -> product
+      // C) item -> product (check both relationship AND attributes)
       if (rel.item?.data?.id) {
         const itemType = getRelType(rel.item) || "item";
         const item = getIncluded(itemType, rel.item.data.id);
-        const prodId = item?.relationships?.product?.data?.id;
-        if (prodId) return prodId;
+        
+        // Try relationship first
+        const prodIdFromRel = item?.relationships?.product?.data?.id;
+        if (prodIdFromRel) return prodIdFromRel;
+        
+        // Try attributes.product_id as fallback
+        const prodIdFromAttr = item?.attributes?.product_id;
+        if (prodIdFromAttr) return prodIdFromAttr;
       }
 
       // D) order -> lines -> product
@@ -375,6 +383,30 @@ export default async function handler(req, res) {
 
       for (const pl of rows) {
         statRelKeys(pl);
+        
+        // Capture first planning structure for debugging
+        if (!debug.samplePlanningStructure) {
+          debug.samplePlanningStructure = {
+            id: pl.id,
+            type: pl.type,
+            attributes: pl.attributes,
+            relationships: Object.keys(pl.relationships || {})
+          };
+        }
+        
+        // Capture first item structure if available
+        if (!debug.sampleItemStructure && pl.relationships?.item?.data?.id) {
+          const itemType = getRelType(pl.relationships.item) || "item";
+          const item = getIncluded(itemType, pl.relationships.item.data.id);
+          if (item) {
+            debug.sampleItemStructure = {
+              id: item.id,
+              type: item.type,
+              attributes: item.attributes,
+              relationships: Object.keys(item.relationships || {})
+            };
+          }
+        }
 
         const productId = resolveProductIdFromPlanning(pl);
         if (!productId) {
