@@ -527,8 +527,20 @@ export default async function handler(req, res) {
             break;
           }
           
-          // If next booking starts after our rounded time, we have a rentable gap
-          if (nextInterval.startMs >= roundedEndMs + (minRentableGapHours * 3600000)) {
+          // Calculate the gap between this booking ending and next one starting
+          const gapMs = nextInterval.startMs - roundedEndMs;
+          
+          // If gap is less than minimum rentable, show available time but warn about next booking
+          if (gapMs > 0 && gapMs < minRentableGapHours * 3600000) {
+            const availableTime = fmtNextAvailable(new Date(roundedEndMs), timezone);
+            const nextBookingTime = fmtTime(new Date(nextInterval.startMs), timezone);
+            nextAvailable = `${availableTime} (booked ${nextBookingTime})`;
+            foundAvailableSlot = true;
+            break;
+          }
+          
+          // If next booking starts after our rounded time with sufficient gap, we have a rentable slot
+          if (gapMs >= minRentableGapHours * 3600000) {
             nextAvailable = fmtNextAvailable(new Date(roundedEndMs), timezone);
             foundAvailableSlot = true;
             break;
