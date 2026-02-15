@@ -279,8 +279,8 @@ export default async function handler(req, res) {
     ].join(",");
 
     const basePlanningsPath =
-      `/plannings?filter[from]=${encodeURIComponent(fromIso)}` +
-      `&filter[till]=${encodeURIComponent(tillIso)}` +
+      `/plannings?filter[starts_at][lte]=${encodeURIComponent(tillIso)}` +
+      `&filter[stops_at][gte]=${encodeURIComponent(fromIso)}` +
       `&include=${encodeURIComponent(includeParam)}`;
 
     // Store included by type:id
