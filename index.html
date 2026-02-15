@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Bubblegum Cars</title>
+  <script>
+    // Router: Check hostname and redirect to appropriate page
+    const hostname = window.location.hostname;
+    
+    if (hostname === 'clean.bubblegumcars.com') {
+      window.location.href = '/clean.html';
+    } else {
+      window.location.href = '/staff.html';
+    }
+  </script>
+</head>
+<body>
+  <p>Loading...</p>
+</body>
+</html>
